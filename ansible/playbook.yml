@@ -1,0 +1,48 @@
+---
+- name: Self-Healing Web Server Playbook
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    web_container: web-server
+    backup_container: backup-server
+    website_dir: /usr/share/nginx/html
+    backup_dir: /backup/web
+    
+  tasks:
+    # Backup current state first
+    - name: Create backup of web files
+      shell: |
+        docker exec {{ backup_container }} sh -c "rsync -av {{ backup_dir }}/ /backup/storage/ 2>/dev/null || true"
+      ignore_errors: yes
+      changed_when: false
+
+    # Check if index.html exists
+    - name: Check if index.html exists in web container
+      shell: docker exec {{ web_container }} test -f {{ website_dir }}/index.html
+      register: index_check
+      ignore_errors: yes
+      changed_when: false
+
+    # Restore index.html if missing
+    - name: Restore index.html if missing
+      shell: |
+        docker exec {{ web_container }} sh -c 'echo "<html><head><title>Self-Healing Web Server</title></head><body><h1>Self-Healing Web Server</h1><p>This server is managed by Ansible and will auto-heal if files are deleted.</p><p>Status: <strong>RESTORED by Ansible</strong></p><p>Timestamp: $(date)</p></body></html>" > {{ website_dir }}/index.html'
+      when: index_check.rc != 0
+
+    # Verify nginx config
+    - name: Test nginx configuration
+      shell: docker exec {{ web_container }} nginx -t
+      register: nginx_test
+      ignore_errors: yes
+      changed_when: false
+
+    # Reload nginx if config is valid
+    - name: Reload nginx
+      shell: docker exec {{ web_container }} nginx -s reload
+      when: nginx_test.rc == 0
+      ignore_errors: yes
+
+    # Display status
+    - name: Display healing status
+      debug:
+        msg: "Self-healing complete. Website available at http://localhost:8080"

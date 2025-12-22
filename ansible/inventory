@@ -1,0 +1,8 @@
+[local]
+localhost ansible_connection=local
+
+[webservers]
+web-server
+
+[backupservers]
+backup-server

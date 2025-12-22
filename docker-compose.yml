@@ -1,0 +1,73 @@
+services:
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins-server
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace
+    networks:
+      - devops-net
+    restart: unless-stopped
+
+  ansible:
+    build: docker/ansible
+    image: ansible-control:local
+    container_name: ansible-control
+    volumes:
+      - ./ansible:/ansible
+      - /var/run/docker.sock:/var/run/docker.sock
+      - web_data:/web_data
+    working_dir: /ansible
+    command: ["sleep", "infinity"]
+    depends_on:
+      - web
+      - backup
+    networks:
+      - devops-net
+
+  web:
+    build: docker/web
+    container_name: web-server
+    volumes:
+      - web_data:/usr/share/nginx/html
+    ports:
+      - "8080:80"
+    networks:
+      - devops-net
+    restart: unless-stopped
+
+  backup:
+    build: docker/backup
+    container_name: backup-server
+    volumes:
+      - web_data:/backup/web
+      - backup_storage:/backup/storage
+    networks:
+      - devops-net
+    command: ["sleep", "infinity"]
+
+  authealer:
+    image: alpine:3.18
+    container_name: authealer
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./ansible:/ansible
+    networks:
+      - devops-net
+    environment:
+      - JENKINS_API_TOKEN=your_jenkins_api_token_here
+    command: ["sh","-c","apk add --no-cache docker-cli bash curl jq && /ansible/authealer.sh"]
+    restart: unless-stopped
+
+volumes:
+  web_data:
+  backup_storage:
+  jenkins_home:
+
+networks:
+  devops-net:
+    driver: bridge
