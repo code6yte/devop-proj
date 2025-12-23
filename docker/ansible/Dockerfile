@@ -10,9 +10,13 @@ RUN apk add --no-cache curl tar jq \
     && cp /usr/bin/jq /out/jq
 
 FROM base
+
 # Copy docker binary from downloader stage
+
 COPY --from=downloader /out/docker/docker /usr/local/bin/docker
+
 COPY --from=downloader /out/jq /usr/local/bin/jq
+
 RUN chmod +x /usr/local/bin/docker /usr/local/bin/jq || true
 
 # Install Docker Compose V2 plugin

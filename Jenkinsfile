@@ -56,26 +56,29 @@ $COMPOSE_CMD -p $COMPOSE_PROJECT_NAME ps
       steps {
         sh '''
 set -euo pipefail
-echo "Running smoke tests for web replicas (ports 8090-8092)"
+echo "Running smoke tests from inside ansible-control network..."
 
-# Function to test a port
-test_port() {
-  local port=$1
+# Function to test a URL using Python (available in ansible-control)
+test_url() {
+  local url=$1
+  echo "Testing $url..."
   for i in $(seq 1 20); do
-    if curl -sSf http://localhost:$port >/dev/null 2>&1; then
-      echo "Web replica on port $port is responding."
+    if docker exec ansible-control python3 -c "import urllib.request; print(urllib.request.urlopen('$url').getcode())" | grep 200 >/dev/null 2>&1; then
+      echo "$url responded with 200 OK"
       return 0
     fi
-    echo "Waiting for port $port... ($i)"
+    echo "Waiting for $url... ($i)"
     sleep 3
   done
-  echo "Port $port did not respond." >&2
+  echo "$url did not respond." >&2
   return 1
 }
 
-test_port 8090
-test_port 8091
-test_port 8092
+# Test the replicas by their internal container names/aliases
+# Compose V2 with project 'devop_healing' creates: devop_healing-web-1, devop_healing-web-2, devop_healing-web-3
+test_url "http://devop_healing-web-1:80"
+test_url "http://devop_healing-web-2:80"
+test_url "http://devop_healing-web-3:80"
 
 echo "All replicas operational."
 '''
