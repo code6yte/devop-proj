@@ -4,6 +4,12 @@ pipeline {
     environment {
         // Ensure the project name matches our setup
         COMPOSE_PROJECT_NAME = 's'
+        // Bind the parameter to an environment variable (optional if names match, but good practice)
+        DISCORD_WEBHOOK_URL = "${params.DISCORD_WEBHOOK_URL}"
+    }
+
+    parameters {
+        string(name: 'DISCORD_WEBHOOK_URL', defaultValue: '', description: 'Enter your Discord Webhook URL here')
     }
 
     stages {
