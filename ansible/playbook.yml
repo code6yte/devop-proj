@@ -24,7 +24,7 @@
         method: POST
         body_format: json
         body:
-          content: "🚑 **Self-Healing Alert!**\nDetected missing containers. Ansible has successfully restored the cluster state.\n> **Action:** Recreated {{ compose_scale.stdout_lines | select('search', 'Created|Recreating') | list | count }} container(s)."
+          content: "🚑 **Self-Healing Alert!**\nDetected missing containers. Ansible has successfully restored the cluster state.\n> **Action:** Recreated {{ compose_scale.stdout_lines | select('search', 'Created|Recreating|Started') | list | count }} container(s)."
       when: compose_scale.changed and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       ignore_errors: yes
 

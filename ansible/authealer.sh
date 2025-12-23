@@ -6,6 +6,13 @@ mkdir -p /var/log
 
 echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
 
+# Send Startup Notification
+if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+  curl -H "Content-Type: application/json" \
+       -d '{"content": "🟢 **Self-Healing Node Online**\nMonitoring started for project `s`."}' \
+       "$DISCORD_WEBHOOK_URL" || true
+fi
+
 # Use docker events to watch for container removal or destroy events
 # When an event occurs, trigger Jenkins healing job
 
