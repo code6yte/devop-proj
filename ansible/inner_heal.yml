@@ -1,0 +1,44 @@
+---
+- name: Check index.html
+  shell: docker exec {{ container_id }} test -f {{ website_dir }}/index.html
+  register: index_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Restore index.html if missing
+  shell: |
+    cat <<EOF > {{ website_dir }}/index.html
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Self-Healing Node</title>
+        <style>
+            :root { --bg-color: #0f172a; --card-bg: #1e293b; --text-primary: #f8fafc; --text-secondary: #94a3b8; --accent: #ef4444; --success: #22c55e; --font-family: 'Segoe UI', system-ui, sans-serif; }
+            body { margin: 0; padding: 0; background-color: var(--bg-color); color: var(--text-primary); font-family: var(--font-family); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+            .container { background-color: var(--card-bg); padding: 2.5rem; border-radius: 1rem; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); text-align: center; max-width: 400px; width: 90%; border: 1px solid rgba(239, 68, 68, 0.3); }
+            h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; }
+            .status-badge { display: inline-flex; align-items: center; background-color: rgba(239, 68, 68, 0.1); color: var(--accent); padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.875rem; font-weight: 600; margin-bottom: 2rem; }
+            .status-badge::before { content: ''; display: inline-block; width: 0.5rem; height: 0.5rem; background-color: var(--accent); border-radius: 50%; margin-right: 0.5rem; box-shadow: 0 0 8px var(--accent); }
+            .info-grid { display: grid; gap: 1rem; text-align: left; margin-top: 1.5rem; }
+            .info-item { background-color: rgba(255, 255, 255, 0.03); padding: 1rem; border-radius: 0.5rem; }
+            .label { display: block; font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 0.25rem; }
+            .value { font-family: 'Courier New', monospace; font-size: 1rem; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Restored Node</h1>
+            <div class="status-badge">Healed by Ansible</div>
+            <div class="info-grid">
+                <div class="info-item"><span class="label">Container ID</span><span class="value">{{ container_id }}</span></div>
+                <div class="info-item"><span class="label">Status</span><span class="value">RESTORED</span></div>
+                <div class="info-item"><span class="label">Time</span><span class="value">$(date)</span></div>
+            </div>
+        </div>
+    </body>
+    </html>
+    EOF
+  when: index_check.rc != 0
+  changed_when: true

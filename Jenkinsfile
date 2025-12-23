@@ -5,9 +5,8 @@ pipeline {
     booleanParam(name: 'CLEANUP', defaultValue: false, description: 'Bring down compose and remove watcher')
   }
   environment {
+    COMPOSE_PROJECT_NAME = 'devop2'
     COMPOSE_FILE = 'docker-compose.yml'
-    WATCHER_NAME = 'authealer-watcher'
-    JENKINS_API_TOKEN = credentials('jenkins_api_token')
   }
 
   stages {
@@ -19,52 +18,36 @@ pipeline {
       steps {
         sh '''
 set -euo pipefail
+# Use "docker compose" (v2) or "docker-compose" (v1)
 if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=docker-compose
+  COMPOSE_CMD="docker-compose"
 else
   COMPOSE_CMD="docker compose"
 fi
 echo "Using $COMPOSE_CMD"
 
-# build only the app images we care about
-$COMPOSE_CMD build --parallel web backup ansible || $COMPOSE_CMD build --parallel
+# Build all services including authealer and ansible
+$COMPOSE_CMD build --parallel
 '''
       }
     }
 
-    stage('Deploy Services') {
+    stage('Deploy Stack') {
       steps {
         sh '''
 set -euo pipefail
 if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=docker-compose
+  COMPOSE_CMD="docker-compose"
 else
   COMPOSE_CMD="docker compose"
 fi
 
-echo "Bringing up web, backup, ansible"
-$COMPOSE_CMD up -d web backup ansible
+echo "Deploying services with scale web=3..."
+# Ensure we use the same project name 'devop2' so Ansible matches
+$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME up -d --scale web=3 --remove-orphans
 
 echo "Current containers:"
-$COMPOSE_CMD ps || true
-'''
-      }
-    }
-
-    stage('Start Watchdog (authealer)') {
-      steps {
-        sh '''
-set -euo pipefail
-WORKDIR=$(pwd)
-echo "Starting authealer watcher container"
-docker rm -f "$WATCHER_NAME" >/dev/null 2>&1 || true
-docker run -d --name "$WATCHER_NAME" --network devops-net \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$WORKDIR/ansible":/ansible \
-  -e JENKINS_API_TOKEN="$JENKINS_API_TOKEN" \
-  alpine:3.18 sh -c "apk add --no-cache docker-cli bash curl jq >/dev/null 2>&1 && /ansible/authealer.sh" \
-  || true
-docker ps --filter name="$WATCHER_NAME" --no-trunc || true
+$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME ps
 '''
       }
     }
@@ -73,19 +56,37 @@ docker ps --filter name="$WATCHER_NAME" --no-trunc || true
       steps {
         sh '''
 set -euo pipefail
-echo "Running smoke tests for web"
-for i in $(seq 1 20); do
-  if curl -sSf http://localhost:8080 >/dev/null 2>&1; then
-    echo "web is responding"
-    exit 0
-  fi
-  echo "waiting... ($i)"
-  sleep 3
-done
-echo "web did not respond after timeout" >&2
-exit 1
+echo "Running smoke tests for web replicas (ports 8090-8092)"
+
+# Function to test a port
+test_port() {
+  local port=$1
+  for i in $(seq 1 20); do
+    if curl -sSf http://localhost:$port >/dev/null 2>&1; then
+      echo "Web replica on port $port is responding."
+      return 0
+    fi
+    echo "Waiting for port $port... ($i)"
+    sleep 3
+  done
+  echo "Port $port did not respond." >&2
+  return 1
+}
+
+test_port 8090
+test_port 8091
+test_port 8092
+
+echo "All replicas operational."
 '''
       }
+    }
+    
+    stage('Verify Self-Healing') {
+        steps {
+            echo "Verifying that the authealer is running..."
+            sh 'docker ps --filter "name=authealer" | grep authealer'
+        }
     }
   }
 
@@ -93,13 +94,12 @@ exit 1
     failure {
       sh '''
 if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=docker-compose
+  COMPOSE_CMD="docker-compose"
 else
   COMPOSE_CMD="docker compose"
 fi
-echo "=== Last logs (tail 200) ==="
-$COMPOSE_CMD logs --tail=200 || true
-docker logs --tail 200 ${WATCHER_NAME} || true
+echo "=== Last logs ==="
+$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME logs --tail=100 || true
 '''
     }
     always {
@@ -107,13 +107,12 @@ docker logs --tail 200 ${WATCHER_NAME} || true
         if (params.CLEANUP) {
           sh '''
 if command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD=docker-compose
+  COMPOSE_CMD="docker-compose"
 else
   COMPOSE_CMD="docker compose"
 fi
-echo "Tearing down compose-managed services and watcher"
-$COMPOSE_CMD down -v --remove-orphans || true
-docker rm -f ${WATCHER_NAME} || true
+echo "Cleaning up..."
+$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME down -v --remove-orphans || true
 '''
         }
       }

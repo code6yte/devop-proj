@@ -1,18 +1,4 @@
 services:
-  jenkins:
-    build: docker/jenkins
-    container_name: jenkins-server
-    ports:
-      - "8081:8080"
-      - "50000:50000"
-    volumes:
-      - jenkins_home:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/workspace
-    networks:
-      - devops-net
-    restart: unless-stopped
-
   ansible:
     build: docker/ansible
     image: ansible-control:local
@@ -21,6 +7,7 @@ services:
       - ./ansible:/ansible
       - /var/run/docker.sock:/var/run/docker.sock
       - web_data:/web_data
+      - .:/project
     working_dir: /ansible
     command: ["sleep", "infinity"]
     depends_on:
@@ -31,11 +18,10 @@ services:
 
   web:
     build: docker/web
-    container_name: web-server
     volumes:
       - web_data:/usr/share/nginx/html
     ports:
-      - "8080:80"
+      - "8090-8092:80"
     networks:
       - devops-net
     restart: unless-stopped
@@ -58,15 +44,12 @@ services:
       - ./ansible:/ansible
     networks:
       - devops-net
-    environment:
-      - JENKINS_API_TOKEN=your_jenkins_api_token_here
-    command: ["sh","-c","apk add --no-cache docker-cli bash curl jq && /ansible/authealer.sh"]
+    command: ["sh","-c","apk add --no-cache docker-cli bash curl jq && sh /ansible/authealer.sh"]
     restart: unless-stopped
 
 volumes:
   web_data:
   backup_storage:
-  jenkins_home:
 
 networks:
   devops-net:
