@@ -24,7 +24,7 @@ services:
     ports:
       - "8090-8092:80"
     networks:
-      - devops-net
+      - network
 
   backup:
     build: docker/backup

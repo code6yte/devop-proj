@@ -18,16 +18,6 @@
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 
-    - name: Notify Discord of Container Healing
-      uri:
-        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
-        method: POST
-        body_format: json
-        body:
-          content: "🚑 **Self-Healing Alert!**\nDetected missing containers. Ansible has successfully restored the cluster state.\n> **Action:** Recreated {{ compose_scale.stdout_lines | select('search', 'Created|Recreating|Started') | list | count }} container(s)."
-      when: compose_scale.changed and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
-      ignore_errors: yes
-
     # 2. Verify and Heal Content (in ALL web containers)
     - name: Get list of all web container IDs
       shell: |
