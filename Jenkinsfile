@@ -10,6 +10,7 @@ pipeline {
 
     parameters {
         string(name: 'DISCORD_WEBHOOK_URL', defaultValue: '', description: 'Enter your Discord Webhook URL here')
+        string(name: 'REPLICAS', defaultValue: '3', description: 'Number of web containers to run')
     }
 
     stages {
@@ -29,10 +30,10 @@ pipeline {
 
                     // Stop existing containers to ensure clean state (optional, but good for "building" phase)
                     // We use '|| true' to prevent failure if containers don't exist yet
-                    // sh 'docker compose down || true'
+                    sh 'docker compose down || true'
                     
-                    // Build and start the containers, scaling the web service to 3
-                    sh 'docker compose up -d --build --scale web=3'
+                    // Build and start the containers, using the REPLICAS parameter
+                    sh "docker compose up -d --build --scale web=${params.REPLICAS}"
                 }
             }
         }
