@@ -10,6 +10,7 @@ services:
       - web-v:/web_data
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+      - TARGET_REPLICAS=${REPLICAS:-3}
     working_dir: /ansible
     depends_on:
       - web

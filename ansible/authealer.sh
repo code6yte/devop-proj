@@ -23,7 +23,14 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
   # 1. Notify IMMEDIATE TRIGGER (Event Detected)
   if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
     curl -H "Content-Type: application/json" \
-         -d '{"content": "🚨 **Healing Event Triggered!**\nDetected a container destruction event. Starting healing process..."}' \
+         -d '{
+          "embeds": [{
+            "title": "🚨 Healing Event Triggered",
+            "description": "Detected a container destruction event. Initiating Ansible healing sequence...",
+            "color": 15548997,
+            "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+          }]
+         }' \
          "$DISCORD_WEBHOOK_URL" || true
   fi
   
@@ -40,7 +47,18 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
         STATUS_ESCAPED=$(echo "$STATUS" | awk '{printf "%s\\n", $0}')
         
         curl -H "Content-Type: application/json" \
-             -d "{\"content\": \"✅ **Health Check (1 min later)**\ncurrent cluster status:\n\`\`\`\n$STATUS_ESCAPED\n\`\`\`\"}" \
+             -d "{
+              \"embeds\": [{
+                \"title\": \"✅ Post-Healing Health Check\",
+                \"description\": \"Current cluster status after 60s stabilization:\",
+                \"color\": 3066993,
+                \"fields\": [{
+                  \"name\": \"Container Statuses\",
+                  \"value\": \"\`\`\`\\n$STATUS_ESCAPED\\n\`\`\`\"
+                }],
+                \"timestamp\": \"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\"
+              }]
+             }" \
              "$DISCORD_WEBHOOK_URL"
       ) &
     fi

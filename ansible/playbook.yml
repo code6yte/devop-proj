@@ -6,7 +6,8 @@
     # Project path mapped in the container
     project_dir: /project
     web_service_name: web
-    desired_replicas: 3
+    # Read the target from the container's environment, default to 3
+    desired_replicas: "{{ lookup('env', 'TARGET_REPLICAS') | default(3, true) }}"
     website_dir: /usr/share/nginx/html
     
   tasks:
@@ -48,7 +49,17 @@
         method: POST
         body_format: json
         body:
-          content: "⚠️ **Health Check Warning**\nContainer `{{ item.item }}` failed HTTP check on port 3000."
+          embeds:
+            - title: "⚠️ Health Check Warning"
+              description: "Container `{{ item.item }}` is not responding to health probes."
+              color: 16763904  # Orange
+              fields:
+                - name: "Status"
+                  value: "Unreachable"
+                  inline: true
+                - name: "Action"
+                  value: "Ansible will continue monitoring."
+                  inline: true
       when: item.rc != 0 and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       loop: "{{ health_check.results }}"
       ignore_errors: yes

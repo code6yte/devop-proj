@@ -71,7 +71,8 @@ pipeline {
                     sh 'docker compose down || true'
                     
                     // Build (now very fast, just copying files) and Start
-                    sh "docker compose up -d --build --scale web=${params.REPLICAS}"
+                    // We pass REPLICAS as an env var so docker-compose can inject it into the ansible container
+                    sh "REPLICAS=${params.REPLICAS} docker compose up -d --build --scale web=${params.REPLICAS}"
                 }
             }
         }
