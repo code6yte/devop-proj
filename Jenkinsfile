@@ -9,7 +9,7 @@ pipeline {
     }
 
     parameters {
-        string(name: 'DISCORD_WEBHOOK_URL', defaultValue: '', description: 'Enter your Discord Webhook URL here')
+        string(name: 'DISCORD_WEBHOOK_URL', defaultValue: 'https://discord.com/api/webhooks/145301451832950/GloeLZi-Fo2sAcdFZZAHYWcak5xlvaAJuvrhYnDlV5igWDC-G5l4r50TptOBYWPdTisJ', description: 'Enter your Discord Webhook URL here')
         string(name: 'REPLICAS', defaultValue: '3', description: 'Number of web containers to run')
         string(name: 'REPO_URL', defaultValue: 'https://github.com/code6yte/Airbnb', description: 'Git URL of the React/Next.js project to build')
     }
