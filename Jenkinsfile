@@ -36,8 +36,9 @@ pipeline {
                 script {
                     // Check if containers are up
                     sh 'docker compose ps'
-                    // specific check to see if the healer is running
-                    sh 'docker ps | grep ansible'
+                    // Check if the ansible container is running using docker compose ps
+                    // This avoids the exit code 1 from grep if it's not ready immediately
+                    sh 'docker compose ps ansible'
                 }
             }
         }
