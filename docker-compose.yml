@@ -1,13 +1,13 @@
 services:
   ansible:
-    build: docker/ansible
+    build:
+      context: .
+      dockerfile: docker/ansible/Dockerfile
     image: ansible-control:local
     container_name: ansible-control
     volumes:
-      - ./ansible:/ansible
       - /var/run/docker.sock:/var/run/docker.sock
       - web_data:/web_data
-      - .:/project
     working_dir: /ansible
     command: ["sleep", "infinity"]
     depends_on:
@@ -16,35 +16,16 @@ services:
     networks:
       - devops-net
 
-  web:
-    build: docker/web
-    volumes:
-      - web_data:/usr/share/nginx/html
-    ports:
-      - "8090-8092:80"
-    networks:
-      - devops-net
-    restart: unless-stopped
-
-  backup:
-    build: docker/backup
-    container_name: backup-server
-    volumes:
-      - web_data:/backup/web
-      - backup_storage:/backup/storage
-    networks:
-      - devops-net
-    command: ["sleep", "infinity"]
-
   authealer:
-    image: alpine:3.18
+    build:
+      context: .
+      dockerfile: docker/authealer/Dockerfile
+    image: authealer:local
     container_name: authealer
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./ansible:/ansible
     networks:
       - devops-net
-    command: ["sh","-c","apk add --no-cache docker-cli bash curl jq && sh /ansible/authealer.sh"]
     restart: unless-stopped
 
 volumes:
