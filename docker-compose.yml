@@ -26,6 +26,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - devops-net
+    command: ["/ansible/authealer.sh"]
     restart: unless-stopped
 
 volumes:

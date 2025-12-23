@@ -27,7 +27,7 @@ fi
 echo "Using $COMPOSE_CMD"
 
 # Build all services including authealer and ansible
-$COMPOSE_CMD build --parallel
+$COMPOSE_CMD build --parallel --no-cache
 '''
       }
     }
