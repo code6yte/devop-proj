@@ -44,7 +44,7 @@ fi
 
 echo "Deploying services with scale web=3..."
 # Ensure we use the same project name 'devop2' so Ansible matches
-$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME up -d --scale web=3 --remove-orphans
+$COMPOSE_CMD -p $COMPOSE_PROJECT_NAME up -d --scale web=3 --remove-orphans --force-recreate
 
 echo "Current containers:"
 $COMPOSE_CMD -p $COMPOSE_PROJECT_NAME ps
