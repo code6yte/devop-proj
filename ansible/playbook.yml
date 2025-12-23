@@ -19,13 +19,20 @@
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 
-    - name: Notify Discord of Container Healing
+    - name: Notify Discord of Successful Healing
       uri:
         url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
         method: POST
         body_format: json
         body:
-          content: "🚑 **Self-Healing Alert!**\nDetected missing containers. Ansible has successfully restored the cluster state.\n> **Action:** Recreated {{ compose_scale.stdout_lines | select('search', 'Created|Recreating|Started') | list | count }} container(s)."
+          embeds:
+            - title: "🛠️ Healing Action Taken"
+              description: "Ansible detected missing containers and has restored the cluster."
+              color: 3066993 # Green
+              fields:
+                - name: "Action"
+                  value: "Recreated **{{ compose_scale.stdout_lines | select('search', 'Created|Recreating|Started') | list | count }}** container(s)."
+                  inline: true
       when: compose_scale.changed and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       ignore_errors: yes
 
@@ -34,6 +41,13 @@
       shell: |
         docker ps --filter "label=com.docker.compose.project=s" --filter "label=com.docker.compose.service={{ web_service_name }}" --format "{{ '{{' }}.ID{{ '}}' }}"
       register: web_containers
+      changed_when: false
+
+    - name: Wait for App to Start (Port 3000)
+      shell: "docker exec {{ item }} sh -c 'for i in $(seq 1 30); do nc -z localhost 3000 && exit 0; sleep 2; done; exit 1'"
+      register: wait_app
+      loop: "{{ web_containers.stdout_lines }}"
+      ignore_errors: yes
       changed_when: false
 
     - name: Check Health in each container
@@ -51,14 +65,11 @@
         body:
           embeds:
             - title: "⚠️ Health Check Warning"
-              description: "Container `{{ item.item }}` is not responding to health probes."
+              description: "Container `{{ item.item }}` is not responding after startup wait."
               color: 16763904  # Orange
               fields:
                 - name: "Status"
-                  value: "Unreachable"
-                  inline: true
-                - name: "Action"
-                  value: "Ansible will continue monitoring."
+                  value: "Unreachable (Port 3000)"
                   inline: true
       when: item.rc != 0 and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       loop: "{{ health_check.results }}"
