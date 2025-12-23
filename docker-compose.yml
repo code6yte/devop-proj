@@ -4,40 +4,43 @@ services:
       context: .
       dockerfile: docker/ansible/Dockerfile
     image: ansible-control:local
-    container_name: ansible-control
+    container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - web_data:/web_data
+      - .:/project
+      - ./ansible:/ansible
+      - web-v:/web_data
     working_dir: /ansible
     depends_on:
       - web
       - backup
     networks:
-      - devops-net
+      - network
 
   web:
     build: docker/web
     volumes:
-      - web_data:/usr/share/nginx/html
+      - web-v:/usr/share/nginx/html
     ports:
       - "8090-8092:80"
     networks:
-      - devops-net
+      - network
     restart: unless-stopped
 
   backup:
     build: docker/backup
+    container_name: backup
     volumes:
-      - web_data:/backup/web
-      - backup_storage:/backup/storage
+      - web-v:/backup/web
+      - backup-v:/backup/storage
     networks:
-      - devops-net
+      - network
     command: ["sleep", "infinity"]
 
 volumes:
-  web_data:
-  backup_storage:
+  web-v:
+  backup-v:
 
 networks:
-  devops-net:
+  network:
     driver: bridge
