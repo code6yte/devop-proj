@@ -1,6 +1,6 @@
 pipeline {
   agent any
-  options { timestamps(); ansiColor('xterm') }
+  options { timestamps() }
   parameters {
     booleanParam(name: 'CLEANUP', defaultValue: false, description: 'Bring down compose and remove watcher')
   }
