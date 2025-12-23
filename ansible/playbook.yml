@@ -14,7 +14,7 @@
     # This automatically heals missing containers and ensures the count is correct
     - name: Ensure {{ desired_replicas }} replicas of web service are running
       shell: |
-        docker compose -p devop2 -f {{ project_dir }}/docker-compose.yml up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
+        docker compose -p devop_healing -f {{ project_dir }}/docker-compose.yml up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 

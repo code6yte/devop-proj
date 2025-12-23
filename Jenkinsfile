@@ -5,7 +5,7 @@ pipeline {
     booleanParam(name: 'CLEANUP', defaultValue: false, description: 'Bring down compose and remove watcher')
   }
   environment {
-    COMPOSE_PROJECT_NAME = 'devop2'
+    COMPOSE_PROJECT_NAME = 'devop_healing'
     COMPOSE_FILE = 'docker-compose.yml'
   }
 
