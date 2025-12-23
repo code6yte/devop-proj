@@ -24,17 +24,16 @@ pipeline {
         stage('Build Artifacts') {
             steps {
                 script {
-                    // 1. Cleanup & Setup
-                    sh 'rm -rf docker/web/app docker/web/html'
-                    sh 'mkdir -p docker/web/html'
+                    // 1. Cleanup
+                    sh 'rm -rf docker/web/app'
                     
-                    // 2. Clone Source
+                    // 2. Clone Source directly to the build context location
                     echo "Cloning ${params.REPO_URL}..."
                     sh "git clone ${params.REPO_URL} docker/web/app"
                     
-                    // 3. Compile in a Temporary Container
-                    // We use '--network host' to fix the DNS/Fetch errors you saw.
-                    // We map the source code into the container.
+                    // 3. Install & Build in a Temporary Container
+                    // We need to run 'npm install' and 'npm run build' so the artifacts are ready.
+                    // We use '--network host' to ensure the build process has full internet access.
                     sh """
                         docker run --rm \
                         --network host \
@@ -44,23 +43,10 @@ pipeline {
                         sh -c "npm install --legacy-peer-deps && npm run build"
                     """
                     
-                    // 4. Normalize Output
-                    // Different frameworks use different output folders. We find the right one and move it.
-                    sh """
-                        if [ -d "docker/web/app/build" ]; then
-                            cp -r docker/web/app/build/* docker/web/html/
-                        elif [ -d "docker/web/app/dist" ]; then
-                            cp -r docker/web/app/dist/* docker/web/html/
-                        elif [ -d "docker/web/app/out" ]; then
-                            cp -r docker/web/app/out/* docker/web/html/
-                        else
-                            echo "⚠️ No standard build folder found (build/dist/out). Checking for .next..."
-                            # If it's a Next.js app without 'output: export', we might need to handle it differently, 
-                            # but for static Nginx hosting, we usually need the static export.
-                            # For now, let's create a placeholder if build failed to produce static files.
-                            echo '<h1>Build Finished, but no static output found. Check your next.config.js for output: export</h1>' > docker/web/html/index.html
-                        fi
-                    """
+                    // 4. (No Move Needed)
+                    // Since we mapped the volume directly to 'docker/web/app', the 
+                    // node_modules and .next/build folders are already there.
+                    // The Dockerfile will COPY app/ .
                 }
             }
         }

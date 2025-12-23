@@ -35,11 +35,23 @@
       register: web_containers
       changed_when: false
 
-    - name: Check and Restore index.html in each container
-      include_tasks: inner_heal.yml
+    - name: Check Health in each container
+      shell: "docker exec {{ item }} wget -q --spider http://localhost:3000"
+      register: health_check
+      ignore_errors: yes
       loop: "{{ web_containers.stdout_lines }}"
-      loop_control:
-        loop_var: container_id
+      changed_when: false
+
+    - name: Notify Discord if Health Check Fails
+      uri:
+        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          content: "⚠️ **Health Check Warning**\nContainer `{{ item.item }}` failed HTTP check on port 3000."
+      when: item.rc != 0 and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+      loop: "{{ health_check.results }}"
+      ignore_errors: yes
 
     - name: Display status
       debug:

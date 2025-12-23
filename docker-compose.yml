@@ -19,10 +19,8 @@ services:
 
   web:
     build: docker/web
-    volumes:
-      - web-v:/usr/share/nginx/html
     ports:
-      - "8090-8092:80"
+      - "8090-8092:3000"
     networks:
       - network
 
