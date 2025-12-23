@@ -32,16 +32,25 @@ pipeline {
                     sh "git clone ${params.REPO_URL} docker/web/app"
                     
                     // 3. Install & Build in a Temporary Container
-                    // We need to run 'npm install' and 'npm run build' so the artifacts are ready.
-                    // We use '--network host' to ensure the build process has full internet access.
-                    sh """
-                        docker run --rm \
-                        --network host \
-                        -v \${PWD}/docker/web/app:/app \
-                        -w /app \
-                        node:18-alpine \
-                        sh -c "npm install --legacy-peer-deps && npm run build"
-                    """
+                    // We avoid volume mounting (-v) because of Docker-in-Docker path mismatches.
+                    // Instead, we copy files in/out.
+                    
+                    // Create a dummy container to build in
+                    sh 'docker create --name builder --network host -w /app node:18-alpine sh -c "npm install --legacy-peer-deps && npm run build"'
+                    
+                    // Copy source code INTO the container
+                    sh 'docker cp docker/web/app/. builder:/app/'
+                    
+                    // Run the build
+                    sh 'docker start -a builder'
+                    
+                    // Copy the built artifacts (with node_modules) OUT of the container
+                    // We overwrite the local 'docker/web/app' with the built version
+                    sh 'rm -rf docker/web/app'
+                    sh 'docker cp builder:/app docker/web/app'
+                    
+                    // Cleanup
+                    sh 'docker rm -f builder'
                     
                     // 4. (No Move Needed)
                     // Since we mapped the volume directly to 'docker/web/app', the 
