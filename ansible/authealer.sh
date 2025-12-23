@@ -8,8 +8,24 @@ echo "[authealer] starting, listening for container destroy events" | tee -a "$L
 
 # Send Startup Notification
 if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+  # Get Web Container Status
+  WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
+  # Escape newlines for JSON
+  WEB_STATUS_ESCAPED=$(echo "$WEB_STATUS" | awk '{printf "%s\\n", $0}')
+
   curl -H "Content-Type: application/json" \
-       -d '{"content": "🟢 **Self-Healing Node Online**\nMonitoring started for project `s`."}' \
+       -d "{
+        \"embeds\": [{
+          \"title\": \"🟢 Self-Healing Node Online\",
+          \"description\": \"The auto-healing monitor has started successfully.\",
+          \"color\": 5763719,
+          \"fields\": [{
+            \"name\": \"Managed Web Containers\",
+            \"value\": \"\`\`\`\\n$WEB_STATUS_ESCAPED\\n\`\`\`\"
+          }],
+          \"timestamp\": \"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'\"
+        }]
+       }" \
        "$DISCORD_WEBHOOK_URL" || true
 fi
 

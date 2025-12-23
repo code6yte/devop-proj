@@ -27,13 +27,13 @@
         body:
           embeds:
             - title: "🛠️ Healing Action Taken"
-              description: "Ansible detected missing containers and has restored the cluster."
+              description: "Ansible enforced the cluster state."
               color: 3066993 # Green
               fields:
-                - name: "Action"
-                  value: "Recreated **{{ compose_scale.stdout_lines | select('search', 'Created|Recreating|Started') | list | count }}** container(s)."
-                  inline: true
-      when: compose_scale.changed and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+                - name: "Output"
+                  value: "```\n{{ compose_scale.stderr | default(compose_scale.stdout) | regex_replace('(?m)^.*(?=Container|Created|Recreating|Started)', '') | truncate(1000) }}\n```"
+                  inline: false
+      when: lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       ignore_errors: yes
 
     # 2. Verify and Heal Content (in ALL web containers)
@@ -44,14 +44,14 @@
       changed_when: false
 
     - name: Wait for App to Start (Port 3000)
-      shell: "docker exec {{ item }} sh -c 'for i in $(seq 1 30); do nc -z localhost 3000 && exit 0; sleep 2; done; exit 1'"
+      shell: "docker exec {{ item }} sh -c 'for i in $(seq 1 30); do wget -q --spider http://127.0.0.1:3000 && exit 0; sleep 2; done; exit 1'"
       register: wait_app
       loop: "{{ web_containers.stdout_lines }}"
       ignore_errors: yes
       changed_when: false
 
     - name: Check Health in each container
-      shell: "docker exec {{ item }} wget -q --spider http://localhost:3000"
+      shell: "docker exec {{ item }} wget -q --spider http://127.0.0.1:3000"
       register: health_check
       ignore_errors: yes
       loop: "{{ web_containers.stdout_lines }}"
