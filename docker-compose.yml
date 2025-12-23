@@ -7,8 +7,6 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project
-      - ./ansible:/ansible
       - web-v:/web_data
     working_dir: /ansible
     depends_on:
