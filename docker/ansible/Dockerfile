@@ -1,13 +1,13 @@
-FROM quay.io/ansible/ansible-runner:latest as base
+FROM quay.io/ansible/ansible-runner:latest AS base
 
 # Use a small downloader stage to fetch the Docker static CLI binary
-FROM alpine:3.18 as downloader
+FROM alpine:3.18 AS downloader
 ARG DOCKER_VERSION=24.0.5
-RUN apk add --no-cache curl tar jq \
+RUN apk add --no-cache curl tar \
     && mkdir -p /out \
     && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz -C /out \
-    && cp /usr/bin/jq /out/jq
+    && curl -L -o /out/jq https://github.com/jqlang/jq/releases/download/jq-1.7/jq-linux64
 
 FROM base
 

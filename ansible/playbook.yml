@@ -31,7 +31,7 @@
               color: 3066993 # Green
               fields:
                 - name: "Output"
-                  value: "```\n{{ compose_scale.stderr | default(compose_scale.stdout) | regex_replace('(?m)^.*(?=Container|Created|Recreating|Started)', '') | truncate(1000) }}\n```"
+                  value: "```\n{{ (compose_scale.stderr | default(compose_scale.stdout) | regex_findall('Container\\s+([a-zA-Z0-9_-]+)\\s+(Created|Recreating|Started)') | map('join', '   ') | join('\n') | trim) or 'State OK (No changes detected)' }}\n```"
                   inline: false
       when: lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       ignore_errors: yes
