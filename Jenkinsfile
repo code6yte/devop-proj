@@ -17,9 +17,13 @@ pipeline {
         stage('Build & Deploy') {
             steps {
                 script {
+                    // Debug: Check versions
+                    sh 'docker --version'
+                    sh 'docker compose version'
+
                     // Stop existing containers to ensure clean state (optional, but good for "building" phase)
                     // We use '|| true' to prevent failure if containers don't exist yet
-                    sh 'docker compose down || true'
+                    // sh 'docker compose down || true'
                     
                     // Build and start the containers, scaling the web service to 3
                     sh 'docker compose up -d --build --scale web=3'
