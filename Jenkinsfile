@@ -11,13 +11,29 @@ pipeline {
     parameters {
         string(name: 'DISCORD_WEBHOOK_URL', defaultValue: '', description: 'Enter your Discord Webhook URL here')
         string(name: 'REPLICAS', defaultValue: '3', description: 'Number of web containers to run')
+        string(name: 'REPO_URL', defaultValue: 'https://github.com/facebook/react.git', description: 'Git URL of the React/Next.js project to build')
     }
 
     stages {
         stage('Checkout') {
             steps {
-                // Checkout the code from the configured SCM (Git)
                 checkout scm
+            }
+        }
+
+        stage('Prepare Source') {
+            steps {
+                script {
+                    // Clean previous app source
+                    sh 'rm -rf docker/web/app'
+                    
+                    // Clone the user-provided repo into docker/web/app
+                    // We use git directly. If private, credentials would need to be handled.
+                    sh "git clone ${params.REPO_URL} docker/web/app"
+                    
+                    // Basic check to see if it looks like a node project
+                    sh 'ls -la docker/web/app'
+                }
             }
         }
 
