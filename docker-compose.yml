@@ -1,6 +1,6 @@
 services:
   jenkins:
-    image: jenkins/jenkins:lts
+    build: docker/jenkins
     container_name: jenkins-server
     ports:
       - "8081:8080"

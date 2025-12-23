@@ -13,14 +13,14 @@ FROM base
 COPY --from=downloader /out/docker/docker /usr/local/bin/docker
 RUN chmod +x /usr/local/bin/docker || true
 
-# Install docker-compose (python implementation) so we can run compose from this container
+# Install docker compose (python implementation) so we can run compose from this container
 RUN set -eux; \
     if command -v pip3 >/dev/null 2>&1; then \
-        pip3 install --no-cache-dir 'docker-compose==1.29.2' || pip3 install --no-cache-dir docker-compose; \
+        pip3 install --no-cache-dir 'docker compose==1.29.2' || pip3 install --no-cache-dir docker compose; \
     elif command -v pip >/dev/null 2>&1; then \
-        pip install --no-cache-dir 'docker-compose==1.29.2' || pip install --no-cache-dir docker-compose; \
+        pip install --no-cache-dir 'docker compose==1.29.2' || pip install --no-cache-dir docker compose; \
     else \
-        echo 'pip not found; docker-compose will not be available' >&2; \
+        echo 'pip not found; docker compose will not be available' >&2; \
     fi
 
 WORKDIR /ansible
