@@ -9,25 +9,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - web_data:/web_data
     working_dir: /ansible
-    command: ["sleep", "infinity"]
+    # CMD is now defined in Dockerfile (runs authealer.sh)
     depends_on:
-      - web
       - backup
     networks:
       - devops-net
-
-  authealer:
-    build:
-      context: .
-      dockerfile: docker/authealer/Dockerfile
-    image: authealer:local
-    container_name: authealer
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - devops-net
-    command: ["/ansible/authealer.sh"]
-    restart: unless-stopped
 
 volumes:
   web_data:

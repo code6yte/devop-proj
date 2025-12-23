@@ -18,17 +18,18 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -SL https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
+# Install jq for parsing docker events
+RUN apk add --no-cache jq
+
 WORKDIR /project
 # Copy entire project for docker-compose context
 COPY . /project
 
 WORKDIR /ansible
-# Copy ansible playbooks (redundant if COPY . /project is done, but keeps structure clear)
-# actually /project/ansible will be the same as local ./ansible. 
-# We can just symlink or set inventory path.
-# But existing playbook uses relative paths or expects /ansible to be the dir?
-# The previous step had `COPY ansible /ansible`. 
-# Let's keep /ansible as the working dir with the playbooks.
 COPY ansible /ansible
 
-CMD ["sleep", "infinity"]
+# Make sure the script is executable
+RUN chmod +x /ansible/authealer.sh
+
+# Run the authealer script as the main process
+CMD ["/ansible/authealer.sh"]

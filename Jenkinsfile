@@ -84,8 +84,8 @@ echo "All replicas operational."
     
     stage('Verify Self-Healing') {
         steps {
-            echo "Verifying that the authealer is running..."
-            sh 'docker ps --filter "name=authealer" | grep authealer'
+            echo "Verifying that the ansible controller is running..."
+            sh 'docker ps --filter "name=ansible-control" | grep ansible-control'
         }
     }
   }
