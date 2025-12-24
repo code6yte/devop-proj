@@ -27,8 +27,9 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-# Copy next.config.js if it exists
-COPY --from=builder /app/next.config.js ./next.config.js 2>/dev/null || :
+# Copy next.config.js (using wildcard trick to make it optional: next.config.j[s])
+# If the file exists, it matches. If not, it matches nothing and doesn't fail.
+COPY --from=builder /app/next.config.j[s] ./next.config.js
 
 EXPOSE 3000
 
