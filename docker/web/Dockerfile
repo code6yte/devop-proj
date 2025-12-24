@@ -1,31 +1,34 @@
-# Stage 1: Dependency Install & Build
+# syntax=docker/dockerfile:1
+# Stage 1: Build
 FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files for caching
-# We expect the context to be 'docker/web/', and the source code in 'docker/web/app/'
+# Copy package files
 COPY app/package.json app/package-lock.json* ./
 
-# Install dependencies (cached if package.json doesn't change)
-RUN npm install --legacy-peer-deps
+# Use BuildKit cache mount for node_modules
+# This persists dependencies between builds even if the container is destroyed!
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --legacy-peer-deps
 
-# Copy the rest of the source code
+# Copy source and build
 COPY app/ .
-
-# Build the Next.js application
 RUN npm run build
 
-# Stage 2: Production Runner
+# Stage 2: Runtime
 FROM node:18-alpine AS runner
 
 WORKDIR /app
-
 ENV NODE_ENV=production
 
-# Copy everything from builder to ensure config files (next.config.js) are present
-# This sacrifices some image size optimization for robustness across different Next.js projects
-COPY --from=builder /app ./
+# Copy only what is needed from the builder
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+# Copy next.config.js if it exists
+COPY --from=builder /app/next.config.js ./next.config.js 2>/dev/null || :
 
 EXPOSE 3000
 

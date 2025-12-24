@@ -1,4 +1,7 @@
 app/node_modules
+app/.next
+app/out
 app/.git
 .git
 .gitignore
+*.log

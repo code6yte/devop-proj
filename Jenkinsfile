@@ -6,6 +6,8 @@ pipeline {
         COMPOSE_PROJECT_NAME = 's'
         // Bind the parameter to an environment variable (optional if names match, but good practice)
         DISCORD_WEBHOOK_URL = "${params.DISCORD_WEBHOOK_URL}"
+        // Enable Docker BuildKit for faster builds
+        DOCKER_BUILDKIT = '1'
     }
 
     parameters {
@@ -31,8 +33,8 @@ pipeline {
                     echo "Cloning ${params.REPO_URL}..."
                     sh "git clone ${params.REPO_URL} docker/web/app"
                     
-                    // The build and dependency installation are now handled 
-                    // by the multi-stage Dockerfile in the Deploy stage.
+                    // The build process is now handled INSIDE the Dockerfile
+                    // using BuildKit's advanced caching.
                 }
             }
         }
@@ -47,9 +49,11 @@ pipeline {
                     // Stop existing containers
                     sh 'docker compose down || true'
                     
-                    // Build (now very fast, just copying files) and Start
-                    // We pass REPLICAS as an env var so docker-compose can inject it into the ansible container
-                    sh "REPLICAS=${params.REPLICAS} docker compose up -d --build --scale web=${params.REPLICAS}"
+                    // Build with BuildKit (explicit build step is cleaner)
+                    sh "REPLICAS=${params.REPLICAS} docker compose build"
+                    
+                    // Start the services
+                    sh "REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS}"
                 }
             }
         }
