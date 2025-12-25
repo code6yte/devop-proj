@@ -76,8 +76,17 @@ pipeline {
             // Clean up workspace if needed, or leave artifacts for debugging
             echo 'Deployment finished.'
         }
+        success {
+            script {
+                def message = "✅ Build Succeeded! Project: ${env.JOB_NAME} Build #${env.BUILD_NUMBER}"
+                sh "curl -H 'Content-Type: application/json' -X POST -d '{\"content\": \"${message}\"}' ${DISCORD_WEBHOOK_URL}"
+            }
+        }
         failure {
-            echo 'Deployment failed.'
+            script {
+                def message = "❌ Build Failed! Project: ${env.JOB_NAME} Build #${env.BUILD_NUMBER}"
+                sh "curl -H 'Content-Type: application/json' -X POST -d '{\"content\": \"${message}\"}' ${DISCORD_WEBHOOK_URL}"
+            }
         }
     }
 }
