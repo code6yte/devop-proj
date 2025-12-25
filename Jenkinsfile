@@ -73,19 +73,60 @@ pipeline {
 
     post {
         always {
-            // Clean up workspace if needed, or leave artifacts for debugging
             echo 'Deployment finished.'
         }
         success {
             script {
-                def message = "✅ Build Succeeded! Project: ${env.JOB_NAME} Build #${env.BUILD_NUMBER}"
-                sh "curl -H 'Content-Type: application/json' -X POST -d '{\"content\": \"${message}\"}' ${DISCORD_WEBHOOK_URL}"
+                def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+                def payload = """
+                {
+                    "embeds": [{
+                        "title": "🚀 Deployment Successful",
+                        "description": "Pipeline **${env.JOB_NAME}** #${env.BUILD_NUMBER} finished successfully.",
+                        "color": 5763719,
+                        "fields": [
+                            {
+                                "name": "Repository",
+                                "value": "${params.REPO_URL}",
+                                "inline": false
+                            },
+                            {
+                                "name": "Web Replicas",
+                                "value": "${params.REPLICAS}",
+                                "inline": true
+                            },
+                            {
+                                "name": "Healing Service",
+                                "value": "🟢 Active (Verified)",
+                                "inline": true
+                            }
+                        ],
+                        "timestamp": "${timestamp}"
+                    }]
+                }
+                """
+                // Write payload to a temp file to avoid escaping issues
+                writeFile file: 'discord_success.json', text: payload
+                sh "curl -H 'Content-Type: application/json' -X POST -d @discord_success.json ${DISCORD_WEBHOOK_URL}"
+                sh "rm discord_success.json"
             }
         }
         failure {
             script {
-                def message = "❌ Build Failed! Project: ${env.JOB_NAME} Build #${env.BUILD_NUMBER}"
-                sh "curl -H 'Content-Type: application/json' -X POST -d '{\"content\": \"${message}\"}' ${DISCORD_WEBHOOK_URL}"
+                def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+                def payload = """
+                {
+                    "embeds": [{
+                        "title": "❌ Deployment Failed",
+                        "description": "Pipeline **${env.JOB_NAME}** #${env.BUILD_NUMBER} encountered an error during execution.",
+                        "color": 15548997,
+                        "timestamp": "${timestamp}"
+                    }]
+                }
+                """
+                writeFile file: 'discord_failure.json', text: payload
+                sh "curl -H 'Content-Type: application/json' -X POST -d @discord_failure.json ${DISCORD_WEBHOOK_URL}"
+                sh "rm discord_failure.json"
             }
         }
     }
