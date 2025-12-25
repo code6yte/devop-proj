@@ -22,7 +22,7 @@ RUN chmod +x /usr/local/bin/docker /usr/local/bin/jq || true
 
 # Install Docker Compose V2 plugin
 RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
-    curl -SL https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    curl -SL https://github.com/docker/compose/releases/download/v5.0.1/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 WORKDIR /project
