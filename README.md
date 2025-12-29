@@ -4,111 +4,97 @@ A robust, automated infrastructure project that deploys Node.js applications (Re
 
 ## 🌟 Key Features
 
-*   **Self-Healing Architecture:** An autonomous `ansible` container watches for Docker `destroy` events and immediately restores missing containers to the desired state.
-*   **Dynamic CI/CD:** A Jenkins pipeline that can clone, build, and deploy *any* provided Git repository (React/Next.js) dynamically.
-*   **Scalability:** Scale the number of web replicas directly via Jenkins parameters.
-*   **Rich Notifications:** Real-time, color-coded Discord alerts for system startup, healing events, and health checks.
-*   **Robust Networking:** Uses host networking during build phases to eliminate Docker-in-Docker DNS/connectivity issues.
+*   **Autonomous Self-Healing:** An `ansible` container monitors the Docker socket for `destroy` events and immediately restores the cluster to its desired state (defined by replicas).
+*   **Dynamic CI/CD:** A Jenkins pipeline capable of cloning, building, and deploying *any* provided Git repository (React/Next.js) via build parameters.
+*   **Advanced Image Building:** Uses multi-stage Docker builds with BuildKit caching (`--mount=type=cache`) to drastically reduce dependency installation times.
+*   **Infrastructure as Code:** Entire environment, including networking and recovery logic, is version-controlled.
+*   **Real-time Observability:** Integrated Discord notifications for deployment status, healing triggers, and post-recovery health checks using rich embeds.
 
 ---
 
 ## 🏗️ System Architecture
 
-1.  **Jenkins:** Orchestrates the pipeline. It clones source code, spins up ephemeral build containers, creates artifacts, and updates the Docker deployment.
-2.  **Web Cluster:** Multiple replicas (`s-web-1`, `s-web-2`, ...) running the Node.js application.
-3.  **Ansible Watchdog:** A specialized container running `authealer.sh` that:
-    *   Listens to the Docker socket for event streams.
-    *   Triggers an Ansible Playbook upon container destruction.
-    *   Performs Health Checks (HTTP requests to Port 3000).
-4.  **Discord Integration:** Sends rich embed notifications for visibility.
+1.  **Jenkins:** The orchestrator. It handles the lifecycle of the application—from fetching source code to building production-ready images and managing the Docker Compose deployment.
+2.  **Web Cluster (N Replicas):** Multiple containers running the Node.js application. Port range `8090-8092` is mapped to internal port `3000`.
+3.  **Ansible Watchdog:** A specialized sidecar running `authealer.sh` that:
+    *   Streams Docker events looking for container destruction.
+    *   Triggers an Ansible Playbook locally to enforce state.
+    *   Uses `jq` for reliable JSON payload generation for alerts.
+4.  **Backup Service:** A dedicated container for data persistence and volume management, ensuring `web-v` data remains available.
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-*   Docker & Docker Compose (V2) installed on the host.
-*   Jenkins running as a Docker container (with access to the host Docker socket).
-*   A Discord Webhook URL.
+*   Docker & Docker Compose (V2)
+*   Jenkins (with access to `/var/run/docker.sock`)
+*   Discord Webhook URL for alerts
 
-### 1. Environment Setup
-Create a `.env` file in the project root:
+### 1. Environment Configuration
+Create a `.env` file in the root directory:
 ```ini
 COMPOSE_PROJECT_NAME=s
-# Optional: Default Webhook (can be overridden in Jenkins)
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_WEBHOOK_URL=your_webhook_url_here
+REPLICAS=3
 ```
 
-### 2. Jenkins Configuration
-Create a **Pipeline** job in Jenkins and point it to this repository (`Jenkinsfile`).
+### 2. Jenkins Pipeline Setup
+Create a **Pipeline** job and point it to the repository's `Jenkinsfile`.
 
 **Build Parameters:**
 | Parameter | Default | Description |
 | :--- | :--- | :--- |
-| `DISCORD_WEBHOOK_URL` | *(Empty)* | The webhook URL for notifications. |
+| `REPO_URL` | `https://github.com/code6yte/Airbnb` | The Next.js/React repo to deploy. |
 | `REPLICAS` | `3` | Number of web containers to maintain. |
-| `REPO_URL` | `...` | Git URL of the Node.js/Next.js app to build. |
+| `DISCORD_WEBHOOK_URL` | `...` | Target for system notifications. |
 
 ---
 
-## 🛠️ How It Works
+## 🛠️ Deep Dive: How It Works
 
-### The Deployment Pipeline
-1.  **Clone:** Jenkins fetches the source code from `REPO_URL`.
-2.  **Build Artifacts:**
-    *   Spins up a temporary `node:18-alpine` container.
-    *   Uses `docker cp` to inject source code (bypassing Volume mounting issues).
-    *   Runs `npm install` and `npm run build`.
-    *   Extracts the built artifacts back to the host.
-3.  **Bake Image:** Builds a production Docker image using the artifacts.
-4.  **Deploy:** Runs `docker compose up -d` with the specified `REPLICAS`.
+### The Deployment Flow
+1.  **Artifact Preparation:** Jenkins clones the `REPO_URL` into `docker/web/app`.
+2.  **Optimized Build:** The `web` Dockerfile uses a multi-stage process. The builder stage leverages `npm install` caching to skip redundant downloads if `package.json` hasn't changed.
+3.  **State Enforcement:** Jenkins runs `docker compose up -d --scale web=${REPLICAS}`, ensuring the specific number of containers are running.
 
-### The Self-Healing Process
-1.  **Monitoring:** The `ansible` container runs `authealer.sh`.
-2.  **Trigger:** When you run `docker rm -f s-web-1`, the script catches the `destroy` event.
-3.  **Alert:** Sends a 🚨 **Healing Event Triggered** notification to Discord.
-4.  **Action:** Ansible runs `docker compose up` to enforce the state (filling the gap).
-5.  **Notification:** Sends a 🛠️ **Healing Action Taken** notification (e.g., `s-web-1 Created`).
-6.  **Verification:** Waits 60s, then sends a ✅ **Post-Healing Health Check** with the cluster status.
+### The Self-Healing Logic
+1.  **Monitoring:** `authealer.sh` runs `docker events --filter 'event=destroy'`.
+2.  **Reaction:** Upon a container exit/removal, it triggers `ansible-playbook /ansible/playbook.yml`.
+3.  **Healing Task:**
+    *   Ansible executes `docker compose up -d --scale web=N --no-recreate`.
+    *   `--no-recreate` ensures that only the missing container is started, preventing downtime for healthy nodes.
+4.  **Verification:** Ansible waits for the application to respond on Port 3000 inside the container before reporting success.
 
 ---
 
 ## 📂 Project Structure
 
 ```text
-/
+.
 ├── ansible/
-│   ├── ansible.cfg       # Ansible configuration
-│   ├── authealer.sh      # Main watchdog script (Event Listener)
-│   ├── inventory         # Localhost inventory
-│   └── playbook.yml      # The logic for healing and health checks
+│   ├── authealer.sh      # Event listener & logic trigger
+│   ├── playbook.yml      # Ansible logic for state enforcement
+│   └── inventory         # Local inventory for Ansible
 ├── docker/
-│   ├── ansible/          # Dockerfile for the control node (with jq, curl, docker-cli)
-│   ├── backup/           # Dockerfile for backup storage service
-│   └── web/              # Dockerfile for the Node.js application
-├── docker-compose.yml    # Service definitions (web, ansible, backup)
-└── Jenkinsfile           # CI/CD Pipeline definition
+│   ├── ansible/          # Dockerfile with Ansible + Docker CLI + jq
+│   ├── web/              # Multi-stage Node.js Dockerfile
+│   └── backup/           # Storage/Backup service definition
+├── docker-compose.yml    # Service orchestration
+└── Jenkinsfile           # Dynamic CI/CD pipeline
 ```
 
 ---
 
-## 🔔 Notification Types
+## 🔔 Notification Matrix
 
-| Type | Color | Description |
-| :--- | :--- | :--- |
-| **System Online** | 🟢 Green | Sent when the Ansible container starts up. Lists managed containers. |
-| **Healing Triggered** | 🔴 Red | Sent immediately when a container is deleted. |
-| **Healing Action** | 🟢 Green | Sent when Ansible recreates a container. Shows "Name Created/Started". |
-| **Health Check** | 🟢 Green | Sent 60s after healing to confirm cluster stability. |
-| **Health Warning** | 🟠 Orange | Sent if a container fails to respond on Port 3000 after 60s. |
-
----
-
-## 🔧 Troubleshooting
-
-*   **Build fails on network:** The pipeline uses `--network host` during the build phase to resolve DNS issues inside Docker containers.
-*   **No Notification:** Ensure `DISCORD_WEBHOOK_URL` is correct. Check `docker logs ansible` to see the `curl` response codes.
-*   **"Connection Refused" in logs:** The application might be taking longer than 60s to start. Adjust the sleep timer in `ansible/playbook.yml`.
+| Event | Color | Channel | Description |
+| :--- | :--- | :--- | :--- |
+| **System Online** | 🟢 Green | Discord | Sent when the Ansible sidecar starts. |
+| **Deployment Success** | 🔵 Blue | Jenkins | Sent when a new build is successfully deployed. |
+| **Healing Triggered** | 🔴 Red | Discord | Immediate alert when a container is destroyed. |
+| **Healing Action** | 🟢 Green | Discord | Confirmation that Ansible has recreated the container. |
+| **Health Warning** | 🟠 Orange | Discord | Alert if a container fails HTTP health checks after recovery. |
 
 ---
 
