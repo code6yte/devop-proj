@@ -37,13 +37,13 @@ pipeline {
             steps {
                 script {
                     sh """
-                    if ! docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                    if ! docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner\$'; then
                         echo "Creating persistent Trivy scanner..."
-                        docker run -d --name trivy-scanner \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v trivy-cache:/root/.cache/ \
+                        docker run -d --name trivy-scanner \\
+                        -v /var/run/docker.sock:/var/run/docker.sock \\
+                        -v trivy-cache:/root/.cache/ \\
                         aquasec/trivy:latest sleep infinity
-                    elif ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                    elif ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner\$'; then
                         echo "Restarting Trivy scanner..."
                         docker start trivy-scanner
                     fi
