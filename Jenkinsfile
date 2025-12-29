@@ -103,6 +103,14 @@ pipeline {
         stage('Security Scan (Trivy)') {
             steps {
                 script {
+                    echo "Ensuring Security Scanner is active..."
+                    sh """
+                    if ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner\$'; then
+                        echo "Restarting Trivy scanner..."
+                        docker start trivy-scanner || echo "Scanner not found, will be created in Initialize stage"
+                    fi
+                    """
+                    
                     echo "Baking production image..."
                     sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
                     
@@ -143,21 +151,18 @@ pipeline {
                 script {
                     try {
                         echo "Deploying with Auto-Healing Management..."
-                        sh "docker exec ansible touch /tmp/healing.lock || true"
+                        // Shared volume lock (visible to ansible container via .:/project)
+                        sh "touch .healing_lock"
                         
                         sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} > deploy_output.txt 2>&1"
-                        echo "--- DEPLOY OUTPUT ---"
-                        sh "cat deploy_output.txt"
                         buildStatus.deploy = "✅ **Deployed**"
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
-                        echo "--- DEPLOY ERROR OUTPUT ---"
-                        sh "cat deploy_output.txt"
                         def logs = sh(returnStdout: true, script: "[ -f deploy_output.txt ] && tail -n 5 deploy_output.txt || echo 'No logs'").trim()
                         buildStatus.deploy_logs = "```text\n${logs}\n```"
                         error "Deployment failed"
                     } finally {
-                        sh "docker exec ansible rm -f /tmp/healing.lock || true"
+                        sh "rm -f .healing_lock"
                     }
                 }
             }
