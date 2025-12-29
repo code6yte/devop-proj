@@ -2,8 +2,8 @@
 set -eu
 
 LOG=/var/log/authealer.log
-# Lock file location INSIDE this container
 LOCK_FILE="/tmp/healing.lock"
+TIMER_FILE="/tmp/healing_timer"
 mkdir -p /var/log
 
 echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
@@ -14,8 +14,8 @@ if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
   PAYLOAD=$(jq -n \
             --arg title "🟢 Self-Healing Node Online" \
             --arg desc "The auto-healing monitor has started successfully."
-            --arg color "5763719"
-            --arg f_name "Managed Web Containers"
+            --arg color "5763719" \
+            --arg f_name "Managed Web Containers" \
             --arg f_val "$WEB_STATUS" \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
@@ -23,23 +23,24 @@ if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
   curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
 fi
 
-# Track the PID of the pending health check to allow debouncing
-CHECK_PID=""
+# Clean up any stale timer file on start
+rm -f "$TIMER_FILE"
 
 docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  # 1. Check if a deployment is in progress (Check local container filesystem)
+  # 1. Skip if deployment lock is active
   if [ -f "$LOCK_FILE" ]; then
-    echo "[authealer] Deployment in progress (internal lock detected). Skipping event: $ev" >> "$LOG"
+    echo "[authealer] Deployment active. Ignoring event." >> "$LOG"
     continue
   fi
 
   echo "[authealer] event detected: $ev" | tee -a "$LOG"
 
-  # 2. Immediate Alert (Only once per burst)
-  if [ -z "$CHECK_PID" ] || ! kill -0 "$CHECK_PID" 2>/dev/null; then
+  # 2. Immediate Alert (Only if no timer is currently active)
+  if [ ! -f "$TIMER_FILE" ]; then
+    touch "$TIMER_FILE"
     if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
       curl -s -H "Content-Type: application/json" \
-           -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Container destruction detected. Ansible is enforcing state...\", \"color\": 15548997}]}" \
+           -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Cluster instability detected. Ansible is restoring state...\", \"color\": 15548997}]}" \
            "$DISCORD_WEBHOOK_URL" > /dev/null || true
     fi
   fi
@@ -47,28 +48,34 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
   # 3. Execute Ansible
   ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
 
-  # 4. Consolidated Health Check (Wait 60s after the LAST event)
-  if [ ! -z "$CHECK_PID" ] && kill -0 "$CHECK_PID" 2>/dev/null; then
-    kill "$CHECK_PID" 2>/dev/null || true
-  fi
-
+  # 4. Debounced Health Check (One final report 60s after the LAST destroy event)
+  # We kill any existing 'sleep' process associated with this script to reset the timer
+  pkill -f "sleep 60 --healing-check" || true
+  
   (
-    sleep 60
-    # Final check: Don't notify if we are in the middle of a new deployment that started AFTER the heal
-    if [ -f "$LOCK_FILE" ]; then exit 0; fi
+    # The unique string allows pkill to find ONLY this timer
+    sleep 60 --healing-check
+    
+    # Final check: Don't notify if a deployment started during our sleep
+    if [ -f "$LOCK_FILE" ]; then 
+      rm -f "$TIMER_FILE"
+      exit 0
+    fi
 
-    echo "[authealer] Running consolidated post-healing check..." >> "$LOG"
+    echo "[authealer] Sending consolidated health report..." >> "$LOG"
     STATUS=$(docker ps --format "table {{.Names}}\t{{.Status}}")
     PAYLOAD=$(jq -n \
               --arg title "✅ Post-Healing Health Check" \
-              --arg desc "Cluster stabilized. Current status:"
-              --arg color "3066993"
-              --arg f_name "Container Statuses"
+              --arg desc "Cluster stabilized. Status of all managed containers:"
+              --arg color "3066993" \
+              --arg f_name "Container Statuses" \
               --arg f_val "$STATUS" \
               --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
     
     curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+    
+    # Remove the timer file so the next burst can trigger a fresh alert
+    rm -f "$TIMER_FILE"
   ) &
-  CHECK_PID=$!
 done
