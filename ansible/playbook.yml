@@ -6,7 +6,8 @@
     # Project path mapped in the container
     project_dir: /project
     web_service_name: web
-    desired_replicas: 3
+    # Read the target from the container's environment, default to 3
+    desired_replicas: "{{ lookup('env', 'TARGET_REPLICAS') | default(3, true) }}"
     website_dir: /usr/share/nginx/html
     
   tasks:
@@ -18,6 +19,23 @@
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 
+    - name: Notify Discord of Successful Healing
+      uri:
+        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          embeds:
+            - title: "🛠️ Healing Action Taken"
+              description: "Ansible enforced the cluster state."
+              color: 3066993 # Green
+              fields:
+                - name: "Output"
+                  value: "```\n{{ (compose_scale.stderr | default(compose_scale.stdout) | regex_findall('Container\\s+([a-zA-Z0-9_-]+)\\s+(Created|Recreating|Started)') | map('join', '   ') | join('\n') | trim) or 'State OK (No changes detected)' }}\n```"
+                  inline: false
+      when: lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+      ignore_errors: yes
+
     # 2. Verify and Heal Content (in ALL web containers)
     - name: Get list of all web container IDs
       shell: |
@@ -25,11 +43,37 @@
       register: web_containers
       changed_when: false
 
-    - name: Check and Restore index.html in each container
-      include_tasks: inner_heal.yml
+    - name: Wait for App to Start (Port 3000)
+      shell: "docker exec {{ item }} sh -c 'for i in $(seq 1 30); do wget -q --spider http://127.0.0.1:3000 && exit 0; sleep 2; done; exit 1'"
+      register: wait_app
       loop: "{{ web_containers.stdout_lines }}"
-      loop_control:
-        loop_var: container_id
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Check Health in each container
+      shell: "docker exec {{ item }} wget -q --spider http://127.0.0.1:3000"
+      register: health_check
+      ignore_errors: yes
+      loop: "{{ web_containers.stdout_lines }}"
+      changed_when: false
+
+    - name: Notify Discord if Health Check Fails
+      uri:
+        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          embeds:
+            - title: "⚠️ Health Check Warning"
+              description: "Container `{{ item.item }}` is not responding after startup wait."
+              color: 16763904  # Orange
+              fields:
+                - name: "Status"
+                  value: "Unreachable (Port 3000)"
+                  inline: true
+      when: item.rc != 0 and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+      loop: "{{ health_check.results }}"
+      ignore_errors: yes
 
     - name: Display status
       debug:

@@ -42,3 +42,13 @@
     EOF
   when: index_check.rc != 0
   changed_when: true
+
+- name: Notify Discord of Content Healing
+  uri:
+    url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+    method: POST
+    body_format: json
+    body:
+      content: "🩹 **Content Healing Alert!**\nFile `index.html` was missing in container `{{ container_id }}`.\n> **Action:** Restored default content."
+  when: index_check.rc != 0 and lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+  ignore_errors: yes

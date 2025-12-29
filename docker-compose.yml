@@ -7,9 +7,10 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project
-      - ./ansible:/ansible
       - web-v:/web_data
+    environment:
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+      - TARGET_REPLICAS=${REPLICAS:-3}
     working_dir: /ansible
     depends_on:
       - web
@@ -19,13 +20,10 @@ services:
 
   web:
     build: docker/web
-    volumes:
-      - web-v:/usr/share/nginx/html
     ports:
-      - "8090-8092:80"
+      - "8090-8092:3000"
     networks:
       - network
-    restart: unless-stopped
 
   backup:
     build: docker/backup
