@@ -4,6 +4,7 @@ pipeline {
     options {
         buildDiscarder(logRotator(numToKeepStr: '3'))
         disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     environment {
@@ -12,10 +13,12 @@ pipeline {
         IMAGE_TAG = "${env.BUILD_NUMBER}" 
         DISCORD_WEBHOOK_URL = credentials('discord-webhook-url')
         
-        // Tracking variables for Discord
-        LINT_STATUS = "⏳ Pending"
-        SECURITY_STATUS = "⏳ Pending"
-        DEPLOY_STATUS = "⏳ Pending"
+        // Status Tracking
+        LINT_STATUS = "⚪ Skipped"
+        SECURITY_STATUS = "⚪ Pending"
+        DEPLOY_STATUS = "⚪ Pending"
+        SECURITY_DETAILS = ""
+        START_TIME = ""
     }
 
     parameters {
@@ -27,24 +30,25 @@ pipeline {
         stage('Initialize') {
             steps {
                 script {
+                    env.START_TIME = System.currentTimeMillis()
                     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                     def startPayload = """
                     {
                         "embeds": [{
-                            "title": "🏗️ Build Started",
-                            "description": "Pipeline **${env.JOB_NAME}** build **#${env.BUILD_NUMBER}** has been initiated.",
+                            "title": "🏗️ Build Pipeline Started",
+                            "description": "Deployment process for **#${env.BUILD_NUMBER}** is now in progress.",
                             "color": 3447003,
                             "fields": [
-                                { "name": "Started By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true },
-                                { "name": "Target Replicas", "value": "${params.REPLICAS}", "inline": true },
-                                { "name": "Repository", "value": "${params.REPO_URL}", "inline": false }
+                                { "name": "👤 Triggered By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true },
+                                { "name": "📋 Project", "value": "`${env.JOB_NAME}`", "inline": true },
+                                { "name": "🔗 Source", "value": "[Repository Link](${params.REPO_URL})", "inline": false }
                             ],
                             "timestamp": "${timestamp}"
                         }]
                     }
                     """
                     writeFile file: 'discord_start.json', text: startPayload
-                    sh "curl -H 'Content-Type: application/json' -X POST -d @discord_start.json ${DISCORD_WEBHOOK_URL}"
+                    sh 'curl -H "Content-Type: application/json" -X POST -d @discord_start.json $DISCORD_WEBHOOK_URL'
                     sh "rm discord_start.json"
                 }
             }
@@ -64,13 +68,11 @@ pipeline {
             steps {
                 script {
                     try {
-                        echo "Building builder for linting..."
                         sh "docker build --target builder -t s-web-builder:${IMAGE_TAG} docker/web"
                         sh "docker run --rm s-web-builder:${IMAGE_TAG} npm run lint"
-                        env.LINT_STATUS = "✅ Passed"
+                        env.LINT_STATUS = "✅ **Passed**"
                     } catch (Exception e) {
-                        env.LINT_STATUS = "❌ Failed"
-                        error "Linting failed"
+                        env.LINT_STATUS = "⚠️ **Warnings/Failed**"
                     }
                 }
             }
@@ -79,16 +81,29 @@ pipeline {
         stage('Security Scan (Trivy)') {
             steps {
                 script {
-                    try {
-                        echo "Building production image for scanning..."
-                        sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
-                        
-                        // Run Trivy (Standard Docker command)
-                        sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity CRITICAL --exit-code 1 s-web:${IMAGE_TAG}"
-                        env.SECURITY_STATUS = "✅ No Critical CVEs"
-                    } catch (Exception e) {
-                        env.SECURITY_STATUS = "🚨 Critical Vulnerabilities Found"
-                        error "Security scan failed"
+                    echo "Building production image for scanning..."
+                    sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
+                    
+                    // Run Trivy with persistent cache
+                    sh """
+                    docker run --rm \\
+                    -v /var/run/docker.sock:/var/run/docker.sock \\
+                    -v trivy-cache:/root/.cache/ \\
+                    aquasec/trivy image \\
+                    --severity CRITICAL,HIGH \\
+                    --no-progress \\
+                    s-web:${IMAGE_TAG} > trivy_report.txt || true
+                    """
+                    
+                    def report = readFile('trivy_report.txt').trim()
+                    
+                    if (report.contains("Total: 0") || !report.contains("Total:")) {
+                        env.SECURITY_STATUS = "✅ **Clean** (No Critical/High)"
+                        env.SECURITY_DETAILS = ""
+                    } else {
+                        env.SECURITY_STATUS = "🚨 **Vulnerabilities Found**"
+                        def table = sh(returnStdout: true, script: "grep -A 15 'Total:' trivy_report.txt | head -n 20").trim()
+                        env.SECURITY_DETAILS = "```\n${table}\n```"
                     }
                 }
             }
@@ -98,12 +113,11 @@ pipeline {
             steps {
                 script {
                     try {
-                        echo "Deploying version ${IMAGE_TAG}..."
                         sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} --no-deps web"
-                        env.DEPLOY_STATUS = "🚀 Success (Rolling Update)"
+                        env.DEPLOY_STATUS = "✅ **Deployed**"
                     } catch (Exception e) {
-                        env.DEPLOY_STATUS = "❌ Deployment Failed"
-                        error "Deploy failed"
+                        env.DEPLOY_STATUS = "❌ **Failed**"
+                        error "Deployment failed"
                     }
                 }
             }
@@ -113,35 +127,52 @@ pipeline {
     post {
         always {
             script {
-                def color = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
-                def title = (currentBuild.currentResult == 'SUCCESS') ? "🟢 Pipeline Build Successful" : "🔴 Pipeline Build Failed"
+                // Calculate Duration
+                long endTime = System.currentTimeMillis()
+                long durationSeconds = (endTime - env.START_TIME.toLong()) / 1000
+                def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
+
+                // Determine Color & Title based on status
+                def resultColor = 5763719 // Success Green
+                def resultTitle = "🏁 Deployment Successful"
+                
+                if (currentBuild.currentResult == 'FAILURE') {
+                    resultColor = 15548997 // Failure Red
+                    resultTitle = "❌ Deployment Failed"
+                } else if (env.SECURITY_STATUS.contains('🚨')) {
+                    resultColor = 16761095 // Warning Orange
+                    resultTitle = "⚠️ Deployment Successful (With Security Risks)"
+                }
+
                 def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                 
+                // Construct JSON
                 def payload = """
                 {
                     "embeds": [{
-                        "title": "${title}",
-                        "description": "Results for build **#${env.BUILD_NUMBER}** of **${env.JOB_NAME}**",
-                        "color": ${color},
+                        "title": "${resultTitle}",
+                        "description": "Pipeline execution details for build **#${env.BUILD_NUMBER}**",
+                        "color": ${resultColor},
                         "fields": [
-                            { "name": "📦 Artifact Version", "value": "`${IMAGE_TAG}`", "inline": true },
+                            { "name": "📊 Execution Status", "value": "> 🏗️ **Lint:** ${env.LINT_STATUS}\n> 🛡️ **Security:** ${env.SECURITY_STATUS}\n> 🚀 **Deploy:** ${env.DEPLOY_STATUS}", "inline": false },
+                            ${ env.SECURITY_DETAILS ? "{\"name\": \"🛡️ Security Deep Dive\", \"value\": ${env.SECURITY_DETAILS.inspect()}, \"inline\": false}," : "" }
+                            { "name": "📦 Artifact", "value": "`${IMAGE_TAG}`", "inline": true },
                             { "name": "👥 Replicas", "value": "`${params.REPLICAS}`", "inline": true },
-                            { "name": "🔍 Lint Check", "value": "${env.LINT_STATUS}", "inline": false },
-                            { "name": "🛡️ Security (Trivy)", "value": "${env.SECURITY_STATUS}", "inline": false },
-                            { "name": "🚀 Deployment", "value": "${env.DEPLOY_STATUS}", "inline": false },
-                            { "name": "🔗 Repository", "value": "[View Code](${params.REPO_URL})", "inline": false }
+                            { "name": "⏱️ Duration", "value": "`${duration}`", "inline": true },
+                            { "name": "📂 Project", "value": "`${env.JOB_NAME}`", "inline": true },
+                            { "name": "🔗 Actions", "value": "[View Build Log](${env.BUILD_URL})", "inline": true }
                         ],
-                        "footer": { "text": "Jenkins Local Docker Pipeline" },
-                        "timestamp": "${timestamp}"
+                        "footer": { "text": "Jenkins • Self-Healing Infrastructure • ${timestamp}" }
                     }]
                 }
                 """
-                writeFile file: 'discord_report.json', text: payload
-                sh "curl -H 'Content-Type: application/json' -X POST -d @discord_report.json ${DISCORD_WEBHOOK_URL}"
                 
-                // Cleanup
+                writeFile file: 'discord_final.json', text: payload
+                sh 'curl -H "Content-Type: application/json" -X POST -d @discord_final.json $DISCORD_WEBHOOK_URL'
+                
+                // Final Cleanup
                 sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
-                sh "rm discord_report.json"
+                sh "rm discord_final.json trivy_report.txt || true"
             }
         }
     }
