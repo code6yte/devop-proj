@@ -116,11 +116,17 @@ s-web:${IMAGE_TAG} > trivy_report.txt 2>&1 || true
                 script {
                     try {
                         echo "Deploying with Auto-Healing..."
+                        // LOCKING: Prevent Ansible from healing during the update
+                        sh "touch .healing_lock"
+                        
                         sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS}"
                         env.DEPLOY_STATUS = "✅ **Deployed**"
                     } catch (Exception e) {
                         env.DEPLOY_STATUS = "❌ **Failed**"
                         error "Deployment failed"
+                    } finally {
+                        // UNLOCKING: Re-enable auto-healing after deployment
+                        sh "rm -f .healing_lock"
                     }
                 }
             }

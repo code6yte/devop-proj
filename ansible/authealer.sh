@@ -2,16 +2,14 @@
 set -eu
 
 LOG=/var/log/authealer.log
+LOCK_FILE="/project/.healing_lock"
 mkdir -p /var/log
 
 echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
 
-# Send Startup Notification using jq for safety
+# Initial Startup Notification
 if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-  # Get Web Container Status
   WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
-  
-  # Build JSON with jq to ensure proper escaping of newlines and values
   PAYLOAD=$(jq -n \
             --arg title "🟢 Self-Healing Node Online" \
             --arg desc "The auto-healing monitor has started successfully." \
@@ -21,59 +19,53 @@ if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
 
-  curl -H "Content-Type: application/json" \
-       -d "$PAYLOAD" \
-       "$DISCORD_WEBHOOK_URL" || true
+  curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
 fi
 
-# Use docker events to watch for container removal or destroy events
+# Track the PID of the pending health check to allow debouncing
+CHECK_PID=""
+
 docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  echo "[authealer] event: $ev" | tee -a "$LOG"
-  echo "[authealer] triggering Ansible healing locally" | tee -a "$LOG"
-
-  # 1. Notify IMMEDIATE TRIGGER (Event Detected)
-  if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-    # Fixed timestamp quoting
-    curl -H "Content-Type: application/json" \
-         -d '{
-          "embeds": [{
-            "title": "🚨 Healing Event Triggered",
-            "description": "Detected a container destruction event. Initiating Ansible healing sequence...",
-            "color": 15548997,
-            "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
-          }]
-         }' \
-         "$DISCORD_WEBHOOK_URL" || true
+  # 1. Check if a deployment is in progress
+  if [ -f "$LOCK_FILE" ]; then
+    echo "[authealer] Deployment in progress (lock detected). Skipping healing for event: $ev" >> "$LOG"
+    continue
   fi
-  
-  # Trigger Ansible playbook directly
-  if ansible-playbook /ansible/playbook.yml 2>&1 | tee -a "$LOG"; then
-    echo "[authealer] Ansible healing triggered successfully" | tee -a "$LOG"
-    
-    # 2. Notify POST-HEALING (Status Check after 1 minute)
+
+  echo "[authealer] event detected: $ev" | tee -a "$LOG"
+
+  # 2. Immediate Alert (Only once per burst)
+  if [ -z "$CHECK_PID" ] || ! kill -0 "$CHECK_PID" 2>/dev/null; then
     if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-      (
-        echo "[authealer] Waiting 60s for post-healing check..." >> "$LOG"
-        sleep 60
-        echo "[authealer] Running post-healing check..." >> "$LOG"
-        
-        STATUS=$(docker ps --format "table {{.Names}}\t{{.Status}}")
-        # Build JSON with jq for the post-healing check as well to be safe
-        PAYLOAD=$(jq -n \
-                  --arg title "✅ Post-Healing Health Check" \
-                  --arg desc "Current cluster status after 60s stabilization:" \
-                  --arg color "3066993" \
-                  --arg f_name "Container Statuses" \
-                  --arg f_val "$STATUS" \
-                  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                  '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
-        
-        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL")
-        echo "[authealer] Post-healing notification sent. HTTP Code: $RESPONSE" >> "$LOG"
-      ) &
+      curl -s -H "Content-Type: application/json" \
+           -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Container destruction detected. Ansible is enforcing state...\", \"color\": 15548997}]}" \
+           "$DISCORD_WEBHOOK_URL" > /dev/null || true
     fi
-
-  else
-    echo "[authealer] Failed to trigger Ansible healing (exit code $?)" | tee -a "$LOG"
   fi
+
+  # 3. Execute Ansible
+  ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
+
+  # 4. Debounced Health Check (Wait 60s after the LAST event)
+  if [ ! -z "$CHECK_PID" ] && kill -0 "$CHECK_PID" 2>/dev/null; then
+    kill "$CHECK_PID" 2>/dev/null || true
+    echo "[authealer] Resetting 60s timer due to new event..." >> "$LOG"
+  fi
+
+  (
+    sleep 60
+    echo "[authealer] Running consolidated post-healing check..." >> "$LOG"
+    STATUS=$(docker ps --format "table {{.Names}}\t{{.Status}}")
+    PAYLOAD=$(jq -n \
+              --arg title "✅ Post-Healing Health Check" \
+              --arg desc "Cluster stabilized. Current status:"
+              --arg color "3066993" \
+              --arg f_name "Container Statuses" \
+              --arg f_val "$STATUS" \
+              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
+    
+    curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+  ) &
+  CHECK_PID=$!
 done
