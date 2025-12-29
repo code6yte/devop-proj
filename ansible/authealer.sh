@@ -2,26 +2,30 @@
 set -eu
 
 LOG=/var/log/authealer.log
+# Lock file location INSIDE this container
 LOCK_FILE="/tmp/healing.lock"
 TIMER_FILE="/tmp/healing_timer"
 mkdir -p /var/log
 
 echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
 
-# Initial Startup Notification
-if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-  WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
-  PAYLOAD=$(jq -n \
-            --arg title "🟢 Self-Healing Node Online" \
-            --arg desc "The auto-healing monitor has started successfully."
-            --arg color "5763719" \
-            --arg f_name "Managed Web Containers" \
-            --arg f_val "$WEB_STATUS" \
-            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
+# Delayed Startup Notification (Wait for cluster to stabilize before reporting "Online")
+(
+  sleep 60
+  if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+    WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
+    PAYLOAD=$(jq -n \
+              --arg title "🟢 Self-Healing Node Online" \
+              --arg desc "The auto-healing monitor has started successfully and is now guarding the cluster." \
+              --arg color "5763719" \
+              --arg f_name "Active Web Containers" \
+              --arg f_val "$WEB_STATUS" \
+              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
 
-  curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
-fi
+    curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+  fi
+) &
 
 # Clean up any stale timer file on start
 rm -f "$TIMER_FILE"
@@ -49,14 +53,11 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
   ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
 
   # 4. Debounced Health Check (One final report 60s after the LAST destroy event)
-  # We kill any existing 'sleep' process associated with this script to reset the timer
   pkill -f "sleep 60 --healing-check" || true
   
   (
-    # The unique string allows pkill to find ONLY this timer
     sleep 60 --healing-check
     
-    # Final check: Don't notify if a deployment started during our sleep
     if [ -f "$LOCK_FILE" ]; then 
       rm -f "$TIMER_FILE"
       exit 0
@@ -75,7 +76,6 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
     
     curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
     
-    # Remove the timer file so the next burst can trigger a fresh alert
     rm -f "$TIMER_FILE"
   ) &
 done
