@@ -24,6 +24,32 @@ pipeline {
     }
 
     stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+                    def startPayload = """
+                    {
+                        "embeds": [{
+                            "title": "🏗️ Build Started",
+                            "description": "Pipeline **${env.JOB_NAME}** build **#${env.BUILD_NUMBER}** has been initiated.",
+                            "color": 3447003,
+                            "fields": [
+                                { "name": "Started By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true },
+                                { "name": "Target Replicas", "value": "${params.REPLICAS}", "inline": true },
+                                { "name": "Repository", "value": "${params.REPO_URL}", "inline": false }
+                            ],
+                            "timestamp": "${timestamp}"
+                        }]
+                    }
+                    """
+                    writeFile file: 'discord_start.json', text: startPayload
+                    sh "curl -H 'Content-Type: application/json' -X POST -d @discord_start.json ${DISCORD_WEBHOOK_URL}"
+                    sh "rm discord_start.json"
+                }
+            }
+        }
+
         stage('Checkout & Prep') {
             steps {
                 script {
