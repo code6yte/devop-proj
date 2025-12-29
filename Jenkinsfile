@@ -1,3 +1,6 @@
+// Define startTime outside the pipeline to ensure it's accessible globally
+def startTime = System.currentTimeMillis()
+
 pipeline {
     agent any
 
@@ -18,7 +21,6 @@ pipeline {
         SECURITY_STATUS = "⚪ Pending"
         DEPLOY_STATUS = "⚪ Pending"
         SECURITY_DETAILS = ""
-        START_TIME = ""
     }
 
     parameters {
@@ -30,7 +32,6 @@ pipeline {
         stage('Initialize') {
             steps {
                 script {
-                    env.START_TIME = System.currentTimeMillis()
                     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                     def startPayload = """
                     {
@@ -41,7 +42,7 @@ pipeline {
                             "fields": [
                                 { "name": "👤 Triggered By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true },
                                 { "name": "📋 Project", "value": "`${env.JOB_NAME}`", "inline": true },
-                                { "name": "🔗 Source", "value": "[Repository Link](${params.REPO_URL})", "inline": false }
+                                { "name": "🔗 Source Repository", "value": "${params.REPO_URL}", "inline": false }
                             ],
                             "timestamp": "${timestamp}"
                         }]
@@ -86,12 +87,12 @@ pipeline {
                     
                     // Run Trivy with persistent cache
                     sh """
-                    docker run --rm \\
-                    -v /var/run/docker.sock:/var/run/docker.sock \\
-                    -v trivy-cache:/root/.cache/ \\
-                    aquasec/trivy image \\
-                    --severity CRITICAL,HIGH \\
-                    --no-progress \\
+                    docker run --rm \
+                    -v /var/run/docker.sock:/var/run/docker.sock \
+                    -v trivy-cache:/root/.cache/ \
+                    aquasec/trivy image \
+                    --severity CRITICAL,HIGH \
+                    --no-progress \
                     s-web:${IMAGE_TAG} > trivy_report.txt || true
                     """
                     
@@ -127,10 +128,13 @@ pipeline {
     post {
         always {
             script {
-                // Calculate Duration
-                long endTime = System.currentTimeMillis()
-                long durationSeconds = (endTime - env.START_TIME.toLong()) / 1000
-                def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
+                // Safely Calculate Duration
+                def duration = "Unknown"
+                if (startTime != null) {
+                    long endTime = System.currentTimeMillis()
+                    long durationSeconds = (endTime - startTime) / 1000
+                    duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
+                }
 
                 // Determine Color & Title based on status
                 def resultColor = 5763719 // Success Green
@@ -160,7 +164,8 @@ pipeline {
                             { "name": "👥 Replicas", "value": "`${params.REPLICAS}`", "inline": true },
                             { "name": "⏱️ Duration", "value": "`${duration}`", "inline": true },
                             { "name": "📂 Project", "value": "`${env.JOB_NAME}`", "inline": true },
-                            { "name": "🔗 Actions", "value": "[View Build Log](${env.BUILD_URL})", "inline": true }
+                            { "name": "🔗 Repository", "value": "${params.REPO_URL}", "inline": false },
+                            { "name": "📝 Logs", "value": "[View Jenkins Build Log](${env.BUILD_URL})", "inline": false }
                         ],
                         "footer": { "text": "Jenkins • Self-Healing Infrastructure • ${timestamp}" }
                     }]
