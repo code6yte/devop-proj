@@ -1,6 +1,6 @@
 import groovy.json.JsonOutput
 
-// GLOBAL STATUS TRACKER - This persists across all stages and post-actions
+// GLOBAL STATUS TRACKER
 def buildStatus = [
     lint: "⚪ Skipped",
     security: "⏳ Pending",
@@ -36,16 +36,30 @@ pipeline {
         stage('Initialize') {
             steps {
                 script {
+                    // Start or verify persistent Trivy container for high-speed scanning
+                    sh """
+                    if ! docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                        echo "Creating persistent Trivy scanner..."
+                        docker run -d --name trivy-scanner \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v trivy-cache:/root/.cache/ \
+                        aquasec/trivy:latest sleep infinity
+                    elif ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                        echo "Restarting Trivy scanner..."
+                        docker start trivy-scanner
+                    fi
+                    """
+
                     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                     def startPayload = [
                         embeds: [[
                             title: "🏗️ Build Pipeline Started",
-                            description: "Deployment process for build **#${env.BUILD_NUMBER}** is now in progress.",
+                            description: "Deployment process for build **#${env.BUILD_NUMBER}** of **${env.JOB_NAME}**.",
                             color: 3447003,
                             fields: [
                                 [ name: "👤 Triggered By", value: "${currentBuild.getBuildCauses()[0].shortDescription}", inline: true ],
                                 [ name: "📋 Project", value: "`${env.JOB_NAME}`", inline: true ],
-                                [ name: "🔗 Source Repository", value: "${params.REPO_URL}", inline: false ]
+                                [ name: "🔗 Repository", value: "${params.REPO_URL}", inline: false ]
                             ],
                             timestamp: timestamp
                         ]]
@@ -71,12 +85,15 @@ pipeline {
             steps {
                 script {
                     try {
-                        echo "Running Linting..."
                         sh "docker build --target builder -t s-web-builder:${IMAGE_TAG} docker/web"
                         sh "docker run --rm s-web-builder:${IMAGE_TAG} npm run lint > lint_output.txt 2>&1"
+                        echo "--- LINT OUTPUT ---"
+                        sh "cat lint_output.txt"
                         buildStatus.lint = "✅ **Passed**"
                     } catch (Exception e) {
                         buildStatus.lint = "⚠️ **Failed**"
+                        echo "--- LINT ERROR OUTPUT ---"
+                        sh "cat lint_output.txt"
                         def logs = sh(returnStdout: true, script: "[ -f lint_output.txt ] && tail -n 5 lint_output.txt || echo 'No logs'").trim()
                         buildStatus.lint_logs = "```text\n${logs}\n```"
                     }
@@ -87,27 +104,29 @@ pipeline {
         stage('Security Scan (Trivy)') {
             steps {
                 script {
-                    echo "Building for scanning..."
+                    echo "Baking production image..."
                     sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
                     
+                    echo "Running Deep Security Scan..."
+                    // We use 'docker exec' to use the persistent scanner container
+                    // Output directly to console using 'tee' and save to file
                     sh """
-                    docker run --rm \
-                    -v /var/run/docker.sock:/var/run/docker.sock \
-                    -v trivy-cache:/root/.cache/ \
-                    aquasec/trivy image \
+                    docker exec trivy-scanner trivy image \
                     --severity CRITICAL,HIGH \
-                    --format table \
+                    --scanners vuln,secret,config \
+                    --vuln-type os,library \
                     --no-progress \
-                    s-web:${IMAGE_TAG} > trivy_report.txt 2>&1 || true
+                    s-web:${IMAGE_TAG} | tee trivy_report.txt || true
                     """
                     
                     def report = readFile('trivy_report.txt').trim()
                     
                     if (report.contains("Total: 0") || !report.contains("Total:")) {
                         buildStatus.security = "✅ **Clean**"
+                        buildStatus.security_details = ""
                     } else {
                         buildStatus.security = "🚨 **Vulnerabilities Found**"
-                        def table = sh(returnStdout: true, script: "grep -A 20 'Total:' trivy_report.txt | head -c 800").trim()
+                        def table = sh(returnStdout: true, script: "grep -A 25 'Total:' trivy_report.txt | head -c 900").trim()
                         buildStatus.security_details = "```text\n${table}...\n```"
                     }
                 }
@@ -118,12 +137,15 @@ pipeline {
             steps {
                 script {
                     try {
-                        echo "Deploying with Auto-Healing..."
                         sh "touch .healing_lock"
                         sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} > deploy_output.txt 2>&1"
+                        echo "--- DEPLOY OUTPUT ---"
+                        sh "cat deploy_output.txt"
                         buildStatus.deploy = "✅ **Deployed**"
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
+                        echo "--- DEPLOY ERROR OUTPUT ---"
+                        sh "cat deploy_output.txt"
                         def logs = sh(returnStdout: true, script: "[ -f deploy_output.txt ] && tail -n 5 deploy_output.txt || echo 'No logs'").trim()
                         buildStatus.deploy_logs = "```text\n${logs}\n```"
                         error "Deployment failed"
@@ -138,7 +160,6 @@ pipeline {
     post {
         always {
             script {
-                // Duration calculation
                 long endTime = System.currentTimeMillis()
                 long durationSeconds = (endTime - buildStatus.start_time) / 1000
                 def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
@@ -149,7 +170,6 @@ pipeline {
                 def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
                 def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                 
-                // Create clean multi-line status string
                 def statusSummary = [
                     "🏗️ **Lint Check:** ${buildStatus.lint}",
                     "🛡️ **Security:** ${buildStatus.security}",
@@ -185,10 +205,14 @@ pipeline {
                     ]]
                 ]
                 
-                writeFile file: 'discord_final.json', text: JsonOutput.toJson(finalPayload)
+                def jsonPayload = JsonOutput.toJson(finalPayload)
+                writeFile file: 'discord_final.json', text: jsonPayload
+                
+                echo "--- DISCORD FINAL PAYLOAD ---"
+                sh "cat discord_final.json"
+                
                 sh 'curl -H "Content-Type: application/json" -X POST -d @discord_final.json $DISCORD_WEBHOOK_URL'
                 
-                // Final Cleanup
                 sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
                 sh "rm -f discord_final.json trivy_report.txt lint_output.txt deploy_output.txt || true"
             }
