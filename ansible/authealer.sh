@@ -2,7 +2,8 @@
 set -eu
 
 LOG=/var/log/authealer.log
-LOCK_FILE="/project/.healing_lock"
+# Lock file location INSIDE this container
+LOCK_FILE="/tmp/healing.lock"
 mkdir -p /var/log
 
 echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
@@ -12,9 +13,9 @@ if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
   WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
   PAYLOAD=$(jq -n \
             --arg title "🟢 Self-Healing Node Online" \
-            --arg desc "The auto-healing monitor has started successfully." \
-            --arg color "5763719" \
-            --arg f_name "Managed Web Containers" \
+            --arg desc "The auto-healing monitor has started successfully."
+            --arg color "5763719"
+            --arg f_name "Managed Web Containers"
             --arg f_val "$WEB_STATUS" \
             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
@@ -26,9 +27,9 @@ fi
 CHECK_PID=""
 
 docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  # 1. Check if a deployment is in progress
+  # 1. Check if a deployment is in progress (Check local container filesystem)
   if [ -f "$LOCK_FILE" ]; then
-    echo "[authealer] Deployment in progress (lock detected). Skipping healing for event: $ev" >> "$LOG"
+    echo "[authealer] Deployment in progress (internal lock detected). Skipping event: $ev" >> "$LOG"
     continue
   fi
 
@@ -46,21 +47,23 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
   # 3. Execute Ansible
   ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
 
-  # 4. Debounced Health Check (Wait 60s after the LAST event)
+  # 4. Consolidated Health Check (Wait 60s after the LAST event)
   if [ ! -z "$CHECK_PID" ] && kill -0 "$CHECK_PID" 2>/dev/null; then
     kill "$CHECK_PID" 2>/dev/null || true
-    echo "[authealer] Resetting 60s timer due to new event..." >> "$LOG"
   fi
 
   (
     sleep 60
+    # Final check: Don't notify if we are in the middle of a new deployment that started AFTER the heal
+    if [ -f "$LOCK_FILE" ]; then exit 0; fi
+
     echo "[authealer] Running consolidated post-healing check..." >> "$LOG"
     STATUS=$(docker ps --format "table {{.Names}}\t{{.Status}}")
     PAYLOAD=$(jq -n \
               --arg title "✅ Post-Healing Health Check" \
               --arg desc "Cluster stabilized. Current status:"
-              --arg color "3066993" \
-              --arg f_name "Container Statuses" \
+              --arg color "3066993"
+              --arg f_name "Container Statuses"
               --arg f_val "$STATUS" \
               --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')

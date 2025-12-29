@@ -38,13 +38,13 @@ pipeline {
                 script {
                     // Start or verify persistent Trivy container for high-speed scanning
                     sh """
-                    if ! docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                    if ! docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner\$'; then
                         echo "Creating persistent Trivy scanner..."
-                        docker run -d --name trivy-scanner \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v trivy-cache:/root/.cache/ \
+                        docker run -d --name trivy-scanner \\
+                        -v /var/run/docker.sock:/var/run/docker.sock \\
+                        -v trivy-cache:/root/.cache/ \\
                         aquasec/trivy:latest sleep infinity
-                    elif ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner$'; then
+                    elif ! docker ps --format '{{.Names}}' | grep -q '^trivy-scanner\$'; then
                         echo "Restarting Trivy scanner..."
                         docker start trivy-scanner
                     fi
@@ -137,20 +137,20 @@ pipeline {
             steps {
                 script {
                     try {
-                        sh "touch .healing_lock"
+                        echo "Deploying with Auto-Healing Management..."
+                        // Create lock file INSIDE the ansible container
+                        sh "docker exec ansible touch /tmp/healing.lock || true"
+                        
                         sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} > deploy_output.txt 2>&1"
-                        echo "--- DEPLOY OUTPUT ---"
-                        sh "cat deploy_output.txt"
-                        buildStatus.deploy = "✅ **Deployed**"
+                        env.DEPLOY_STATUS = "✅ **Deployed**"
                     } catch (Exception e) {
-                        buildStatus.deploy = "❌ **Failed**"
-                        echo "--- DEPLOY ERROR OUTPUT ---"
-                        sh "cat deploy_output.txt"
+                        env.DEPLOY_STATUS = "❌ **Failed**"
                         def logs = sh(returnStdout: true, script: "[ -f deploy_output.txt ] && tail -n 5 deploy_output.txt || echo 'No logs'").trim()
                         buildStatus.deploy_logs = "```text\n${logs}\n```"
                         error "Deployment failed"
                     } finally {
-                        sh "rm -f .healing_lock"
+                        // Remove lock file from the ansible container
+                        sh "docker exec ansible rm -f /tmp/healing.lock || true"
                     }
                 }
             }
