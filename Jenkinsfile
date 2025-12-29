@@ -1,14 +1,3 @@
-// Global map to track status and logs across stages
-def buildStatus = [
-    lint: "⚪ Skipped",
-    lint_logs: "",
-    security: "⏳ Pending",
-    security_details: "",
-    deploy: "⏳ Pending",
-    deploy_logs: "",
-    start_time: System.currentTimeMillis()
-]
-
 pipeline {
     agent any
 
@@ -21,8 +10,15 @@ pipeline {
     environment {
         COMPOSE_PROJECT_NAME = 's'
         DOCKER_BUILDKIT = '1'
-        IMAGE_TAG = "${env.BUILD_NUMBER}" 
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
         DISCORD_WEBHOOK_URL = credentials('discord-webhook-url')
+        
+        // Use env variables for global persistence across stages
+        LINT_STATUS = "⚪ Skipped"
+        SECURITY_STATUS = "⏳ Pending"
+        DEPLOY_STATUS = "⏳ Pending"
+        SECURITY_DETAILS = ""
+        START_TIME = "${System.currentTimeMillis()}"
     }
 
     parameters {
@@ -39,7 +35,7 @@ pipeline {
                     {
                         "embeds": [{
                             "title": "🏗️ Build Pipeline Started",
-                            "description": "Deployment process for **#${env.BUILD_NUMBER}** is now in progress.",
+                            "description": "Deployment process for build **#${env.BUILD_NUMBER}** of project **${env.JOB_NAME}**.",
                             "color": 3447003,
                             "fields": [
                                 { "name": "👤 Triggered By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true },
@@ -73,13 +69,10 @@ pipeline {
                     try {
                         echo "Running Linting..."
                         sh "docker build --target builder -t s-web-builder:${IMAGE_TAG} docker/web"
-                        sh "docker run --rm s-web-builder:${IMAGE_TAG} npm run lint > lint_output.txt 2>&1"
-                        buildStatus.lint = "✅ **Passed**"
+                        sh "docker run --rm s-web-builder:${IMAGE_TAG} npm run lint"
+                        env.LINT_STATUS = "✅ **Passed**"
                     } catch (Exception e) {
-                        buildStatus.lint = "⚠️ **Failed**"
-                        // Capture last 10 lines of lint failure
-                        def logs = sh(returnStdout: true, script: "[ -f lint_output.txt ] && tail -n 10 lint_output.txt || echo 'No logs available'").trim()
-                        buildStatus.lint_logs = "```text\n${logs}\n```"
+                        env.LINT_STATUS = "⚠️ **Failed**"
                     }
                 }
             }
@@ -88,28 +81,31 @@ pipeline {
         stage('Security Scan (Trivy)') {
             steps {
                 script {
-                    echo "Building for scanning..."
+                    echo "Building production image for scanning..."
                     sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
                     
+                    // Run Trivy and capture report
                     sh """
-                    docker run --rm \
-                    -v /var/run/docker.sock:/var/run/docker.sock \
-                    -v trivy-cache:/root/.cache/ \
-                    aquasec/trivy image \
-                    --severity CRITICAL,HIGH \
-                    --no-progress \
-                    s-web:${IMAGE_TAG} > trivy_report.txt 2>&1 || true
-                    """
+docker run --rm \
+-v /var/run/docker.sock:/var/run/docker.sock \
+-v trivy-cache:/root/.cache/ \
+aquasec/trivy image \
+--severity CRITICAL,HIGH \
+--format table \
+--no-progress \
+s-web:${IMAGE_TAG} > trivy_report.txt 2>&1 || true
+"""
                     
                     def report = readFile('trivy_report.txt').trim()
                     
                     if (report.contains("Total: 0") || !report.contains("Total:")) {
-                        buildStatus.security = "✅ **Clean**"
-                        buildStatus.security_details = ""
+                        env.SECURITY_STATUS = "✅ **Clean**"
+                        env.SECURITY_DETAILS = ""
                     } else {
-                        buildStatus.security = "🚨 **Vulnerabilities Found**"
-                        def table = sh(returnStdout: true, script: "grep -A 20 'Total:' trivy_report.txt | head -n 25").trim()
-                        buildStatus.security_details = "```\n${table}\n```"
+                        env.SECURITY_STATUS = "🚨 **Vulnerabilities Found**"
+                        // Extract the summary table and limit to 800 characters for Discord safety
+                        def table = sh(returnStdout: true, script: "grep -A 20 'Total:' trivy_report.txt | head -c 800").trim()
+                        env.SECURITY_DETAILS = "```text\n${table}...\n```"
                     }
                 }
             }
@@ -119,13 +115,11 @@ pipeline {
             steps {
                 script {
                     try {
-                        echo "Deploying with Auto-Healing (Ansible)..."
-                        sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} > deploy_output.txt 2>&1"
-                        buildStatus.deploy = "✅ **Deployed**"
+                        echo "Deploying with Auto-Healing..."
+                        sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS}"
+                        env.DEPLOY_STATUS = "✅ **Deployed**"
                     } catch (Exception e) {
-                        buildStatus.deploy = "❌ **Failed**"
-                        def logs = sh(returnStdout: true, script: "[ -f deploy_output.txt ] && tail -n 10 deploy_output.txt || echo 'No logs available'").trim()
-                        buildStatus.deploy_logs = "```text\n${logs}\n```"
+                        env.DEPLOY_STATUS = "❌ **Failed**"
                         error "Deployment failed"
                     }
                 }
@@ -136,56 +130,46 @@ pipeline {
     post {
         always {
             script {
+                // Duration calculation
                 long endTime = System.currentTimeMillis()
-                long durationSeconds = (endTime - buildStatus.start_time) / 1000
+                long durationSeconds = (endTime - env.START_TIME.toLong()) / 1000
                 def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
 
+                // Logic for Result Color
                 def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
-                if (buildStatus.security.contains('🚨')) resultColor = 16761095
+                if (env.SECURITY_STATUS.contains('🚨')) resultColor = 16761095
                 
                 def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
                 def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                 
-                def executionStatus = "> 🏗️ **Lint Check:** ${buildStatus.lint}\n> 🛡️ **Security:** ${buildStatus.security}\n> 🚀 **Deployment:** ${buildStatus.deploy}"
+                // Constructing multiline string manually to ensure formatting
+                def statusText = "🏗️ **Lint:** ${env.LINT_STATUS}\n🛡️ **Security:** ${env.SECURITY_STATUS}\n🚀 **Deploy:** ${env.DEPLOY_STATUS}"
 
-                // Build dynamic fields list
-                def fields = [
-                    [ name: "📊 Execution Status", value: executionStatus, inline: false ]
-                ]
-
-                if (buildStatus.security_details) {
-                    fields << [ name: "🛡️ Security Deep Dive", value: buildStatus.security_details, inline: false ]
+                def payload = """
+                {
+                    "embeds": [{
+                        "title": "${resultTitle}",
+                        "description": "Final report for build **#${env.BUILD_NUMBER}** of **${env.JOB_NAME}**",
+                        "color": ${resultColor},
+                        "fields": [
+                            { "name": "📊 Execution Summary", "value": "${statusText}", "inline": false },
+                            ${ env.SECURITY_DETAILS ? "{\"name\": \"🛡️ Security Report\", \"value\": ${env.SECURITY_DETAILS.inspect()}, \"inline\": false}," : "" }
+                            { "name": "⏱️ Duration", "value": "`${duration}`", "inline": true },
+                            { "name": "👥 Replicas", "value": "`${params.REPLICAS}`", "inline": true },
+                            { "name": "📦 Version", "value": "`${IMAGE_TAG}`", "inline": true },
+                            { "name": "🔗 Repository", "value": "${params.REPO_URL}", "inline": false }
+                        ],
+                        "footer": { "text": "Jenkins • Self-Healing Infrastructure • ${timestamp}" }
+                    }]
                 }
-                if (buildStatus.lint_logs) {
-                    fields << [ name: "⚠️ Lint Error Snippet", value: buildStatus.lint_logs, inline: false ]
-                }
-                if (buildStatus.deploy_logs) {
-                    fields << [ name: "❌ Deploy Error Snippet", value: buildStatus.deploy_logs, inline: false ]
-                }
-
-                fields << [ name: "⏱️ Duration", value: "`${duration}`", inline: true ]
-                fields << [ name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true ]
-                fields << [ name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true ]
-                fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", inline: false ]
-
-                def payload = [
-                    embeds: [[
-                        title: resultTitle,
-                        description: "Pipeline summary for build **#${env.BUILD_NUMBER}**",
-                        color: resultColor,
-                        fields: fields,
-                        footer: [ text: "Jenkins • Self-Healing Infrastructure • ${timestamp}" ]
-                    ]]
-                ]
+                """
                 
-                // Using groovy JSON builder to handle escaping perfectly
-                def jsonPayload = groovy.json.JsonOutput.toJson(payload)
-                writeFile file: 'discord_final.json', text: jsonPayload
-                
+                writeFile file: 'discord_final.json', text: payload
                 sh 'curl -H "Content-Type: application/json" -X POST -d @discord_final.json $DISCORD_WEBHOOK_URL'
                 
+                // Cleanup
                 sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
-                sh "rm discord_final.json trivy_report.txt lint_output.txt deploy_output.txt || true"
+                sh "rm discord_final.json trivy_report.txt || true"
             }
         }
     }
