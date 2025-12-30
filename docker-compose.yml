@@ -7,13 +7,10 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project  # Critical: Share filesystem for reliable locking
-      - web-v:/web_data
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - TARGET_REPLICAS=${REPLICAS:-3}
     working_dir: /ansible
-    # Removed depends_on to prevent sidecar restarts during web updates
     networks:
       - network
 
@@ -21,23 +18,9 @@ services:
     build: docker/web
     image: s-web:${IMAGE_TAG:-latest}
     ports:
-      - "8090-8092:3000"
+      - "8090-8099:3000"
     networks:
       - network
-
-  backup:
-    build: docker/backup
-    container_name: backup
-    volumes:
-      - web-v:/backup/web
-      - backup-v:/backup/storage
-    networks:
-      - network
-    command: ["sleep", "infinity"]
-
-volumes:
-  web-v:
-  backup-v:
 
 networks:
   network:

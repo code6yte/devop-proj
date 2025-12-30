@@ -141,26 +141,45 @@ pipeline {
                 script {
                     echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        // Step 1: Stop Ansible monitoring FIRST (before removing old containers)
-                        echo "🛑 Stopping Ansible monitoring..."
-                        sh "docker stop ansible 2>/dev/null || echo 'Ansible container not running'"
+                        // Step 1: Ensure Ansible base image exists (build once if not present)
+                        def baseImageExists = sh(returnStatus: true, script: "docker image inspect ansible-control:base >/dev/null 2>&1") == 0
+                        if (!baseImageExists) {
+                            echo "🏗️ Building Ansible base image (one-time setup)..."
+                            sh "docker build -f docker/ansible/Dockerfile.base -t ansible-control:base ."
+                            echo "✅ Ansible base image created: ansible-control:base"
+                        } else {
+                            echo "✅ Using existing Ansible base image: ansible-control:base"
+                        }
+                        
+                        // Step 2: Stop and remove Ansible container FIRST (before other containers)
+                        echo "🛑 Stopping and removing Ansible container..."
+                        sh "docker rm -f ansible 2>/dev/null || echo 'Ansible container not found'"
 
-                        // Step 2: Deploy new containers and remove old ones
-                        echo "📦 Deploying new containers..."
+                        // Step 3: Deploy new web containers and remove old ones
+                        echo "📦 Deploying new web containers..."
                         sh """
                             IMAGE_TAG=${IMAGE_TAG} \
                             REPLICAS=${params.REPLICAS} \
                             docker compose up -d --scale web=${params.REPLICAS} --no-color 2>&1 | tee deploy_output.txt
                         """
                         
-                        // Step 3: Verify deployment
+                        // Step 4: Verify web deployment
                         def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
-                        echo "✅ Deployment successful - ${runningContainers} containers running"
-                        buildStatus.deploy = "✅ **Deployed**"
+                        echo "✅ Web deployment successful - ${runningContainers} containers running"
                         
-                        // Step 4: Start Ansible monitoring LAST (after new containers are running)
-                        echo "✅ Starting Ansible monitoring..."
-                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        // Step 5: Create backup image for self-healing
+                        echo "💾 Creating backup image for self-healing..."
+                        sh "docker tag s-web:${IMAGE_TAG} s-web-backup:latest"
+                        echo "✅ Backup image created: s-web-backup:latest"
+                        
+                        // Step 6: Rebuild and restart Ansible container LAST (fast build - only playbooks)
+                        echo "🔨 Building Ansible container (playbooks only)..."
+                        sh "docker compose build ansible"
+                        echo "🔄 Starting Ansible monitoring..."
+                        sh "docker compose up -d ansible --no-color"
+                        echo "✅ Ansible monitoring active"
+                        
+                        buildStatus.deploy = "✅ **Deployed**"
                         
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
@@ -169,7 +188,7 @@ pipeline {
                         
                         // Ensure Ansible is started even on failure
                         echo "⚠️ Deployment failed - starting Ansible anyway..."
-                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        sh "docker compose up -d ansible --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
                         
                         error "Deployment failed: ${e.message}"
                     }
@@ -231,14 +250,25 @@ pipeline {
 
                 // Send final Discord notification
                 try {
-                    def hasVulnerabilities = buildStatus.security.contains('🚨') && fileExists('security_report.md')
+                    // Send build notification first (without attachment)
                     sendDiscordNotification(
                         title: resultTitle,
                         description: "Final report for build **#${env.BUILD_NUMBER}**",
                         color: resultColor,
-                        fields: fields,
-                        attachFile: hasVulnerabilities ? 'security_report.md' : null
+                        fields: fields
                     )
+                    
+                    // Send security report file separately if vulnerabilities found
+                    if (buildStatus.security.contains('🚨') && fileExists('security_report.md')) {
+                        sleep 1 // Small delay to ensure messages arrive in order
+                        echo "📎 Sending security report file..."
+                        sh """
+                            curl -f -X POST \
+                            -F "content=📋 **Detailed Security Report - Build #${env.BUILD_NUMBER}**" \
+                            -F "file=@security_report.md" \
+                            \$DISCORD_WEBHOOK_URL
+                        """
+                    }
                 } catch (Exception e) {
                     echo "⚠️ WARNING: Failed to send Discord notification: ${e.message}"
                 }
@@ -313,7 +343,7 @@ def ensureTrivyScanner() {
 
 /**
  * Send notification to Discord webhook
- * @param config Map with title, description, color, fields, attachFile (optional)
+ * @param config Map with title, description, color, fields
  */
 def sendDiscordNotification(Map config) {
     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
@@ -331,24 +361,13 @@ def sendDiscordNotification(Map config) {
     
     writeFile file: 'discord_payload.json', text: JsonOutput.toJson(payload)
     
-    if (config.attachFile && fileExists(config.attachFile)) {
-        // Send with file attachment
-        sh """
-            curl -f -X POST \
-            -H "Content-Type: multipart/form-data" \
-            -F "payload_json=\$(cat discord_payload.json)" \
-            -F "file1=@${config.attachFile}" \
-            \$DISCORD_WEBHOOK_URL
-        """
-    } else {
-        // Send simple JSON notification
-        sh """
-            curl -f -X POST \
-            -H "Content-Type: application/json" \
-            -d @discord_payload.json \
-            \$DISCORD_WEBHOOK_URL
-        """
-    }
+    // Send simple JSON notification
+    sh """
+        curl -f -X POST \
+        -H "Content-Type: application/json" \
+        -d @discord_payload.json \
+        \$DISCORD_WEBHOOK_URL
+    """
     
     sh "rm -f discord_payload.json"
 }
