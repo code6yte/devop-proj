@@ -80,14 +80,15 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
 
       # Execute Restoration
       echo "[authealer] Running ansible playbook to restore containers..." | tee -a "$LOG"
-      ansible-playbook /ansible/playbook.yml -vv >> "$LOG" 2>&1
-      ANSIBLE_EXIT_CODE=$?
+      echo "[authealer] Playbook output:" | tee -a "$LOG"
+      
+      ansible-playbook /ansible/playbook.yml -vv 2>&1 | tee -a "$LOG"
+      ANSIBLE_EXIT_CODE=${PIPESTATUS[0]}
       
       if [ $ANSIBLE_EXIT_CODE -ne 0 ]; then
         echo "[authealer] ERROR: Ansible playbook failed with exit code $ANSIBLE_EXIT_CODE" | tee -a "$LOG"
-        tail -n 50 "$LOG" | tee -a "$LOG"
       else
-        echo "[authealer] Ansible playbook completed successfully" | tee -a "$LOG"
+        echo "[authealer] Ansible playbook completed successfully (exit code: $ANSIBLE_EXIT_CODE)" | tee -a "$LOG"
       fi
 
       # Post-Healing Health Check
