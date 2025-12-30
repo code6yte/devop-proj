@@ -190,23 +190,23 @@ pipeline {
 
     post {
         always {
-            long endTime = System.currentTimeMillis()
-            long durationSeconds = (endTime - buildStatus.start_time) / 1000
+            def endTime = System.currentTimeMillis()
+            def durationSeconds = (endTime - buildStatus.start_time) / 1000
             def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
 
             def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
             if (buildStatus.security.contains('🚨')) resultColor = 16761095
             
-def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
-def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+            def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
+            def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
             
-def statusSummary = [
+            def statusSummary = [
                 "🏗️ **Lint Check:** ${buildStatus.lint}",
                 "🛡️ **Security:** ${buildStatus.security}",
                 "🚀 **Deployment:** ${buildStatus.deploy}"
             ].join("\n")
 
-def fields = [
+            def fields = [
                 [ name: "📊 Execution Summary", value: statusSummary, inline: false ],
                 [ name: "🛡️ Security Overview", value: buildStatus.security_details, inline: false ]
             ]
@@ -221,9 +221,9 @@ def fields = [
             fields << [ name: "⏱️ Duration", value: "`${duration}`", inline: true ]
             fields << [ name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true ]
             fields << [ name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true ]
-            fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", "inline": false ]
+            fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", inline: false ]
 
-def finalPayload = [
+            def finalPayload = [
                 embeds: [[
                     title: resultTitle,
                     description: "Final report for build **#${env.BUILD_NUMBER}**",
