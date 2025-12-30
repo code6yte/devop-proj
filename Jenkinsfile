@@ -231,14 +231,25 @@ pipeline {
 
                 // Send final Discord notification
                 try {
-                    def hasVulnerabilities = buildStatus.security.contains('🚨') && fileExists('security_report.md')
+                    // Send build notification first (without attachment)
                     sendDiscordNotification(
                         title: resultTitle,
                         description: "Final report for build **#${env.BUILD_NUMBER}**",
                         color: resultColor,
-                        fields: fields,
-                        attachFile: hasVulnerabilities ? 'security_report.md' : null
+                        fields: fields
                     )
+                    
+                    // Send security report file separately if vulnerabilities found
+                    if (buildStatus.security.contains('🚨') && fileExists('security_report.md')) {
+                        sleep 1 // Small delay to ensure messages arrive in order
+                        echo "📎 Sending security report file..."
+                        sh """
+                            curl -f -X POST \
+                            -F "content=📋 **Detailed Security Report - Build #${env.BUILD_NUMBER}**" \
+                            -F "file=@security_report.md" \
+                            \$DISCORD_WEBHOOK_URL
+                        """
+                    }
                 } catch (Exception e) {
                     echo "⚠️ WARNING: Failed to send Discord notification: ${e.message}"
                 }
@@ -313,7 +324,7 @@ def ensureTrivyScanner() {
 
 /**
  * Send notification to Discord webhook
- * @param config Map with title, description, color, fields, attachFile (optional)
+ * @param config Map with title, description, color, fields
  */
 def sendDiscordNotification(Map config) {
     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
@@ -331,24 +342,13 @@ def sendDiscordNotification(Map config) {
     
     writeFile file: 'discord_payload.json', text: JsonOutput.toJson(payload)
     
-    if (config.attachFile && fileExists(config.attachFile)) {
-        // Send with file attachment
-        sh """
-            curl -f -X POST \
-            -H "Content-Type: multipart/form-data" \
-            -F "payload_json=\$(cat discord_payload.json)" \
-            -F "file1=@${config.attachFile}" \
-            \$DISCORD_WEBHOOK_URL
-        """
-    } else {
-        // Send simple JSON notification
-        sh """
-            curl -f -X POST \
-            -H "Content-Type: application/json" \
-            -d @discord_payload.json \
-            \$DISCORD_WEBHOOK_URL
-        """
-    }
+    // Send simple JSON notification
+    sh """
+        curl -f -X POST \
+        -H "Content-Type: application/json" \
+        -d @discord_payload.json \
+        \$DISCORD_WEBHOOK_URL
+    """
     
     sh "rm -f discord_payload.json"
 }
