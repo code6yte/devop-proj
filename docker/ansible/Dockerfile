@@ -13,11 +13,8 @@ RUN apk add --no-cache curl tar \
 FROM base
 
 # Copy docker binary from downloader stage
-
 COPY --from=downloader /out/docker/docker /usr/local/bin/docker
-
 COPY --from=downloader /out/jq /usr/local/bin/jq
-
 RUN chmod +x /usr/local/bin/docker /usr/local/bin/jq || true
 
 # Install Docker Compose V2 plugin
@@ -25,15 +22,16 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -SL https://github.com/docker/compose/releases/download/v5.0.1/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-WORKDIR /project
-# Copy entire project for docker-compose context
-COPY . /project
-
+# Set working directory
 WORKDIR /ansible
-COPY ansible /ansible
 
-# Make sure the script is executable
+# Only copy the watchdog script (playbooks are mounted as volumes)
+COPY ansible/authealer.sh /ansible/authealer.sh
 RUN chmod +x /ansible/authealer.sh
+
+# Copy ansible.cfg for configuration
+COPY ansible/ansible.cfg /ansible/ansible.cfg
+COPY ansible/inventory /ansible/inventory
 
 # Run the authealer script as the main process
 CMD ["/ansible/authealer.sh"]
