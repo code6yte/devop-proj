@@ -60,6 +60,17 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
     if [ "$CURRENT_COUNT" -lt "$DESIRED_COUNT" ]; then
       echo "[authealer] Healing needed: $CURRENT_COUNT/$DESIRED_COUNT containers" | tee -a "$LOG"
       
+      # Check if backup image exists
+      if ! docker image inspect s-web-backup:latest > /dev/null 2>&1; then
+        echo "[authealer] ERROR: Backup image s-web-backup:latest not found! Cannot restore containers." | tee -a "$LOG"
+        if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+          curl -s -H "Content-Type: application/json" \
+               -d "{\"embeds\": [{\"title\": \"❌ Healing Failed\", \"description\": \"Backup image not found. Run pipeline to create backup image.\", \"color\": 15548997}]}" \
+               "$DISCORD_WEBHOOK_URL" > /dev/null || true
+        fi
+        continue
+      fi
+      
       # Immediate Alert
       if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
         curl -s -H "Content-Type: application/json" \
@@ -68,7 +79,16 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
       fi
 
       # Execute Restoration
-      ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
+      echo "[authealer] Running ansible playbook to restore containers..." | tee -a "$LOG"
+      ansible-playbook /ansible/playbook.yml -vv >> "$LOG" 2>&1
+      ANSIBLE_EXIT_CODE=$?
+      
+      if [ $ANSIBLE_EXIT_CODE -ne 0 ]; then
+        echo "[authealer] ERROR: Ansible playbook failed with exit code $ANSIBLE_EXIT_CODE" | tee -a "$LOG"
+        tail -n 50 "$LOG" | tee -a "$LOG"
+      else
+        echo "[authealer] Ansible playbook completed successfully" | tee -a "$LOG"
+      fi
 
       # Post-Healing Health Check
       (

@@ -32,17 +32,17 @@
     - name: Start new web containers from backup image
       shell: |
         docker run -d \
-          --name s-web-restored-{{ item }} \
+          --name s-web-restored-{{ ansible_date_time.epoch }}-{{ item }} \
           --network {{ network_name }} \
           --label com.docker.compose.project={{ compose_project }} \
           --label com.docker.compose.service={{ web_service_name }} \
           --label restored=true \
           --label restored.timestamp={{ ansible_date_time.iso8601 }} \
-          -p 8090-8099:3000 \
           {{ backup_image }}
       loop: "{{ range(1, (containers_needed | int) + 1) | list }}"
       when: containers_needed | int > 0
       register: container_restore
+      ignore_errors: yes
       ignore_errors: yes
 
     - name: Notify Discord of Container Restoration
