@@ -2,78 +2,76 @@
 set -eu
 
 LOG=/var/log/authealer.log
+# Note: LOCK_FILE is no longer actively checked here, as Jenkins will stop/start this script directly.
 mkdir -p /var/log
 
-echo "[authealer] starting, listening for container destroy events" | tee -a "$LOG"
+echo "[authealer] starting..." | tee -a "$LOG"
 
-# Send Startup Notification using jq for safety
-if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-  # Get Web Container Status
-  WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}\t{{.Status}}")
+# Wait for web containers to be healthy before reporting "Online"
+(
+  REPLICAS="${TARGET_REPLICAS:-3}" # Get target replicas from env, default to 3
+  echo "[authealer] Waiting for ${REPLICAS} web containers to be healthy..." >> "$LOG"
   
-  # Build JSON with jq to ensure proper escaping of newlines and values
-  PAYLOAD=$(jq -n \
-            --arg title "🟢 Self-Healing Node Online" \
-            --arg desc "The auto-healing monitor has started successfully." \
-            --arg color "5763719" \
-            --arg f_name "Managed Web Containers" \
-            --arg f_val "$WEB_STATUS" \
-            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
-
-  curl -H "Content-Type: application/json" \
-       -d "$PAYLOAD" \
-       "$DISCORD_WEBHOOK_URL" || true
-fi
-
-# Use docker events to watch for container removal or destroy events
-docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  echo "[authealer] event: $ev" | tee -a "$LOG"
-  echo "[authealer] triggering Ansible healing locally" | tee -a "$LOG"
-
-  # 1. Notify IMMEDIATE TRIGGER (Event Detected)
-  if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-    # Fixed timestamp quoting
-    curl -H "Content-Type: application/json" \
-         -d '{
-          "embeds": [{
-            "title": "🚨 Healing Event Triggered",
-            "description": "Detected a container destruction event. Initiating Ansible healing sequence...",
-            "color": 15548997,
-            "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
-          }]
-         }' \
-         "$DISCORD_WEBHOOK_URL" || true
-  fi
-  
-  # Trigger Ansible playbook directly
-  if ansible-playbook /ansible/playbook.yml 2>&1 | tee -a "$LOG"; then
-    echo "[authealer] Ansible healing triggered successfully" | tee -a "$LOG"
+  ATTEMPTS=0
+  MAX_ATTEMPTS=60 # Wait up to 10 minutes (60 * 10s)
+  while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
+    HEALTHY_COUNT=$(docker ps --filter "name=s-web" --filter "status=running" --format "{{.ID}}" | wc -l)
     
-    # 2. Notify POST-HEALING (Status Check after 1 minute)
-    if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-      (
-        echo "[authealer] Waiting 60s for post-healing check..." >> "$LOG"
-        sleep 60
-        echo "[authealer] Running post-healing check..." >> "$LOG"
-        
-        STATUS=$(docker ps --format "table {{.Names}}\t{{.Status}}")
-        # Build JSON with jq for the post-healing check as well to be safe
+    if [ "$HEALTHY_COUNT" -ge "$REPLICAS" ]; then
+      echo "[authealer] Detected ${HEALTHY_COUNT}/${REPLICAS} healthy web containers. Sending startup notification." >> "$LOG"
+      if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+        WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}	{{.Status}}")
         PAYLOAD=$(jq -n \
-                  --arg title "✅ Post-Healing Health Check" \
-                  --arg desc "Current cluster status after 60s stabilization:" \
-                  --arg color "3066993" \
-                  --arg f_name "Container Statuses" \
-                  --arg f_val "$STATUS" \
+                  --arg title "🟢 Self-Healing Node Online" \
+                  --arg desc "The auto-healing monitor is now guarding the cluster." \
+                  --arg color "5763719" \
+                  --arg f_name "Active Web Containers" \
+                  --arg f_val "$WEB_STATUS" \
                   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                   '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
-        
-        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL")
-        echo "[authealer] Post-healing notification sent. HTTP Code: $RESPONSE" >> "$LOG"
-      ) &
-    fi
 
-  else
-    echo "[authealer] Failed to trigger Ansible healing (exit code $?)" | tee -a "$LOG"
+        curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+      fi
+      break # Success, exit loop
+    fi
+    echo "[authealer] Only ${HEALTHY_COUNT}/${REPLICAS} healthy web containers found. Retrying in 10s..." >> "$LOG"
+    sleep 10
+    ATTEMPTS=$((ATTEMPTS+1))
+  done
+  
+  if [ "$ATTEMPTS" -eq "$MAX_ATTEMPTS" ]; then
+      echo "[authealer] Timeout waiting for web containers to become healthy. Startup notification skipped." >> "$LOG"
   fi
+) &
+
+# Now start monitoring for unexpected events
+docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
+  echo "[authealer] unexpected destroy event detected: $ev" | tee -a "$LOG"
+
+  # Immediate Alert
+  if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+    curl -s -H "Content-Type: application/json" \
+         -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Unexpected container destruction. Restoring state...\", \"color\": 15548997}]}" \
+         "$DISCORD_WEBHOOK_URL" > /dev/null || true
+  fi
+
+  # Execute Restoration
+  ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
+
+  # Post-Healing Health Check
+  (
+    sleep 60
+    echo "[authealer] Cluster stabilized. Sending report..." >> "$LOG"
+    STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}	{{.Status}}")
+    PAYLOAD=$(jq -n \
+              --arg title "✅ Post-Healing Health Check" \
+              --arg desc "Recovery complete. Current status:"
+              --arg color "3066993" \
+              --arg f_name "Container Statuses" \
+              --arg f_val "$STATUS" \
+              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
+    
+    curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+  ) &
 done

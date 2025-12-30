@@ -7,19 +7,19 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - .:/project  # Critical: Share filesystem for reliable locking
       - web-v:/web_data
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - TARGET_REPLICAS=${REPLICAS:-3}
     working_dir: /ansible
-    depends_on:
-      - web
-      - backup
+    # Removed depends_on to prevent sidecar restarts during web updates
     networks:
       - network
 
   web:
     build: docker/web
+    image: s-web:${IMAGE_TAG:-latest}
     ports:
       - "8090-8092:3000"
     networks:
