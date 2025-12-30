@@ -46,33 +46,52 @@ echo "[authealer] starting..." | tee -a "$LOG"
 
 # Now start monitoring for unexpected events
 docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  echo "[authealer] unexpected destroy event detected: $ev" | tee -a "$LOG"
-
-  # Immediate Alert
-  if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
-    curl -s -H "Content-Type: application/json" \
-         -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Unexpected container destruction. Restoring state...\", \"color\": 15548997}]}" \
-         "$DISCORD_WEBHOOK_URL" > /dev/null || true
-  fi
-
-  # Execute Restoration
-  PLAYBOOK="${PLAYBOOK_FILE:-/ansible/playbook.yml}"
-  ansible-playbook "$PLAYBOOK" >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
-
-  # Post-Healing Health Check
-  (
-    sleep 60
-    echo "[authealer] Cluster stabilized. Sending report..." >> "$LOG"
-    STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}	{{.Status}}")
-    PAYLOAD=$(jq -n \
-              --arg title "✅ Post-Healing Health Check" \
-              --arg desc "Recovery complete. Current status:"
-              --arg color "3066993" \
-              --arg f_name "Container Statuses" \
-              --arg f_val "$STATUS" \
-              --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
+  # Extract container name and check if it's a web container
+  CONTAINER_NAME=$(echo "$ev" | jq -r '.Actor.Attributes.name // empty')
+  
+  # Only heal if it's a web container from our compose project
+  if echo "$CONTAINER_NAME" | grep -q "^s-web"; then
+    echo "[authealer] Web container destroyed: $CONTAINER_NAME" | tee -a "$LOG"
     
-    curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
-  ) &
+    # Check current count vs desired
+    CURRENT_COUNT=$(docker ps --filter "label=com.docker.compose.project=s" --filter "label=com.docker.compose.service=web" --format "{{.ID}}" | wc -l)
+    DESIRED_COUNT="${TARGET_REPLICAS:-3}"
+    
+    if [ "$CURRENT_COUNT" -lt "$DESIRED_COUNT" ]; then
+      echo "[authealer] Healing needed: $CURRENT_COUNT/$DESIRED_COUNT containers" | tee -a "$LOG"
+      
+      # Immediate Alert
+      if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+        curl -s -H "Content-Type: application/json" \
+             -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Container $CONTAINER_NAME destroyed. Restoring state ($CURRENT_COUNT/$DESIRED_COUNT)...\", \"color\": 15548997}]}" \
+             "$DISCORD_WEBHOOK_URL" > /dev/null || true
+      fi
+
+      # Execute Restoration
+      PLAYBOOK="${PLAYBOOK_FILE:-/ansible/playbook.yml}"
+      ansible-playbook "$PLAYBOOK" >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
+
+      # Post-Healing Health Check
+      (
+        sleep 10
+        echo "[authealer] Cluster stabilized. Sending report..." >> "$LOG"
+        FINAL_COUNT=$(docker ps --filter "label=com.docker.compose.project=s" --filter "label=com.docker.compose.service=web" --format "table {{.Names}}\t{{.Status}}")
+        PAYLOAD=$(jq -n \
+                  --arg title "✅ Post-Healing Health Check" \
+                  --arg desc "Recovery complete. Cluster state restored." \
+                  --arg color "3066993" \
+                  --arg f_name "Container Statuses" \
+                  --arg f_val "$FINAL_COUNT" \
+                  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                  '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
+        
+        curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+      ) &
+      
+      # Cooldown to prevent rapid re-triggering
+      sleep 5
+    else
+      echo "[authealer] Cluster healthy: $CURRENT_COUNT/$DESIRED_COUNT containers. No action needed." >> "$LOG"
+    fi
+  fi
 done
