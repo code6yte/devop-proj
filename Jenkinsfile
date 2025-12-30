@@ -62,10 +62,12 @@ pipeline {
                     }
 
                     // Final check to ensure it's actually running
-                    isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
-                    if (isRunning == 'false') {
+                    def statusCheck = sh(returnStdout: true, script: "docker inspect -f '{{.State.Running}}' ${containerName} 2>/dev/null || echo 'false'").trim()
+                    if (statusCheck != 'true') {
+                        sh "docker logs ${containerName} || true"
                         error "Trivy scanner failed to start/run. Aborting pipeline."
                     }
+                    echo "Trivy scanner is running successfully."
                     
                     def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                     def startPayload = [
@@ -190,7 +192,7 @@ pipeline {
         always {
             script {
                 def endTime = System.currentTimeMillis()
-                def durationSeconds = (endTime - buildStatus.start_time) / 1000
+                long durationSeconds = (endTime - buildStatus.start_time) / 1000
                 def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
 
                 def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
