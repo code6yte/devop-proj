@@ -38,10 +38,10 @@ pipeline {
                 script {
                     echo "Ensuring Trivy scanner container is ready..."
                     def containerName = "trivy-scanner"
-                    def containerExists = sh(returnStdout: true, script: "docker ps -a --format '{{.Names}}' | grep -q '^${containerName}$' && echo 'true' || echo 'false'").trim()
+                    def containerExists = sh(returnStdout: true, script: "docker ps -a --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
                     def isRunning = "false"
                     if (containerExists == 'true') {
-                        isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}$' && echo 'true' || echo 'false'").trim()
+                        isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
                     }
                     
                     if (containerExists == 'false') {
@@ -64,7 +64,7 @@ pipeline {
                     }
 
                     // Final check to ensure it's actually running
-                    isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}$' && echo 'true' || echo 'false'").trim()
+                    isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
                     if (isRunning == 'false') {
                         error "Trivy scanner failed to start/run. Aborting pipeline."
                     }
