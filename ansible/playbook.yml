@@ -31,8 +31,13 @@
     # 3. Start missing containers from backup image
     - name: Start new web containers from backup image
       shell: |
+        NEXT_ID=$(docker ps -a --filter "label=com.docker.compose.project={{ compose_project }}" \
+                              --filter "label=com.docker.compose.service={{ web_service_name }}" \
+                              --format "{{ '{{' }}.Names{{ '}}' }}" | \
+                  grep -oP 's-web-\K\d+' | sort -n | tail -1)
+        NEXT_ID=$((${NEXT_ID:-0} + 1))
         docker run -d \
-          --name s-web-restored-{{ ansible_date_time.epoch }}-{{ item }} \
+          --name s-web-${NEXT_ID} \
           --network {{ network_name }} \
           --label com.docker.compose.project={{ compose_project }} \
           --label com.docker.compose.service={{ web_service_name }} \
