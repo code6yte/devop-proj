@@ -7,8 +7,7 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./ansible/playbook.yml:/ansible/playbook.yml  # Mount updated playbook
-      - ./ansible/inner_heal.yml:/ansible/inner_heal.yml  # Mount inner healing tasks
+      - ./ansible:/ansible:ro  # Mount entire ansible directory as read-only
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - TARGET_REPLICAS=${REPLICAS:-3}
