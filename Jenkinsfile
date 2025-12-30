@@ -248,42 +248,45 @@ pipeline {
 def ensureTrivyScanner() {
     echo "🔧 Checking Trivy scanner status..."
     
-    def isRunning = sh(
-        returnStdout: true,
-        script: "docker inspect -f '{{.State.Running}}' ${TRIVY_CONTAINER} 2>/dev/null || echo 'false'"
-    ).trim()
-
-    if (isRunning == 'true') {
-        echo "✅ Trivy scanner is already running"
-        return
-    }
-
-    // Check if container exists but is stopped
+    // Check if container exists
     def exists = sh(
         returnStdout: true,
         script: "docker ps -a --format '{{.Names}}' | grep -q '^${TRIVY_CONTAINER}\$' && echo 'true' || echo 'false'"
     ).trim()
 
     if (exists == 'true') {
-        echo "🔄 Starting existing Trivy scanner..."
-        sh "docker start ${TRIVY_CONTAINER}"
-    } else {
-        echo "🆕 Creating new Trivy scanner container..."
-        sh """
-            docker run -d \
-            --name ${TRIVY_CONTAINER} \
-            --restart unless-stopped \
-            --entrypoint /bin/sh \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v trivy-cache:/root/.cache/ \
-            aquasec/trivy:latest \
-            -c 'while true; do sleep 3600; done'
-        """
+        // Check if it's running
+        def isRunning = sh(
+            returnStdout: true,
+            script: "docker inspect -f '{{.State.Running}}' ${TRIVY_CONTAINER} 2>/dev/null || echo 'false'"
+        ).trim()
+        
+        if (isRunning == 'true') {
+            echo "✅ Trivy scanner is already running"
+            return
+        }
+        
+        // Container exists but not running - check if it's the old broken version
+        echo "🗑️ Removing old Trivy scanner container..."
+        sh "docker rm -f ${TRIVY_CONTAINER} || true"
     }
+
+    // Create new Trivy scanner container
+    echo "🆕 Creating new Trivy scanner container..."
+    sh """
+        docker run -d \
+        --name ${TRIVY_CONTAINER} \
+        --restart unless-stopped \
+        --entrypoint /bin/sh \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v trivy-cache:/root/.cache/ \
+        aquasec/trivy:latest \
+        -c 'while true; do sleep 3600; done'
+    """
 
     // Verify it's running
     sleep 2
-    isRunning = sh(
+    def isRunning = sh(
         returnStdout: true,
         script: "docker inspect -f '{{.State.Running}}' ${TRIVY_CONTAINER} 2>/dev/null || echo 'false'"
     ).trim()
