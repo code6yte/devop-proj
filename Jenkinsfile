@@ -162,11 +162,10 @@ pipeline {
                         sh "docker tag s-web:${IMAGE_TAG} s-web-backup:latest"
                         echo "✅ Backup image created: s-web-backup:latest"
                         
-                        // Step 5: Rebuild and start Ansible container LAST (with updated playbook)
-                        echo "🔨 Rebuilding Ansible with updated playbook..."
-                        sh "docker compose build ansible --no-cache"
-                        echo "✅ Starting Ansible monitoring..."
+                        // Step 5: Restart Ansible container LAST (playbook mounted as volume - no rebuild needed)
+                        echo "🔄 Restarting Ansible monitoring..."
                         sh "docker compose up -d ansible --no-color"
+                        echo "✅ Ansible monitoring active"
                         
                         buildStatus.deploy = "✅ **Deployed**"
                         

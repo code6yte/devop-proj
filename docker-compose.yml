@@ -7,6 +7,9 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./ansible/playbook.yml:/ansible/playbook.yml:ro
+      - ./ansible/inner_heal.yml:/ansible/inner_heal.yml:ro
+      - ./ansible/inventory:/ansible/inventory:ro
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - TARGET_REPLICAS=${REPLICAS:-3}
