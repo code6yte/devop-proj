@@ -15,7 +15,7 @@
       shell: |
         docker ps --filter "label=com.docker.compose.project={{ compose_project }}" \
                   --filter "label=com.docker.compose.service={{ web_service_name }}" \
-                  --format "{{.ID}}" | wc -l
+                  --format "{{ '{{' }}.ID{{ '}}' }}" | wc -l
       register: current_count
       changed_when: false
 
@@ -77,7 +77,7 @@
       shell: |
         docker ps --filter "label=com.docker.compose.project={{ compose_project }}" \
                   --filter "label=com.docker.compose.service={{ web_service_name }}" \
-                  --format "{{.ID}}" | tail -n +{{ desired_replicas | int + 1 }}
+                  --format "{{ '{{' }}.ID{{ '}}' }}" | tail -n +{{ desired_replicas | int + 1 }}
       register: excess_containers
       when: current_count.stdout | int > desired_replicas | int
       changed_when: false
