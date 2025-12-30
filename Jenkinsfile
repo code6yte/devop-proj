@@ -121,14 +121,12 @@ pipeline {
 
                     // Generate security report
                     sh """
-                        cat > security_report.md << 'EEOF'
-# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}
-## Image: s-web:${IMAGE_TAG}
----
-\`\`\`text
-\$(cat trivy_report.txt)
-\`\`\`
-EEOF
+                        echo '# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}' > security_report.md
+                        echo '## Image: s-web:${IMAGE_TAG}' >> security_report.md
+                        echo '---' >> security_report.md
+                        echo '```text' >> security_report.md
+                        cat trivy_report.txt >> security_report.md
+                        echo '```' >> security_report.md
                     """
                 }
             }
