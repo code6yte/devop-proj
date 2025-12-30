@@ -141,14 +141,14 @@ pipeline {
                 script {
                     echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        // Step 1: Ensure Ansible image exists (build once if not present)
-                        def ansibleImageExists = sh(returnStatus: true, script: "docker image inspect ansible-control:local >/dev/null 2>&1") == 0
-                        if (!ansibleImageExists) {
-                            echo "🔨 Building Ansible image for first time..."
-                            sh "docker compose build ansible --no-cache"
-                            echo "✅ Ansible image created: ansible-control:local"
+                        // Step 1: Ensure Ansible base image exists (build once if not present)
+                        def baseImageExists = sh(returnStatus: true, script: "docker image inspect ansible-control:base >/dev/null 2>&1") == 0
+                        if (!baseImageExists) {
+                            echo "🏗️ Building Ansible base image (one-time setup)..."
+                            sh "docker build -f docker/ansible/Dockerfile.base -t ansible-control:base ."
+                            echo "✅ Ansible base image created: ansible-control:base"
                         } else {
-                            echo "✅ Using existing Ansible image: ansible-control:local"
+                            echo "✅ Using existing Ansible base image: ansible-control:base"
                         }
                         
                         // Step 2: Stop and remove Ansible container FIRST (before other containers)
@@ -172,9 +172,11 @@ pipeline {
                         sh "docker tag s-web:${IMAGE_TAG} s-web-backup:latest"
                         echo "✅ Backup image created: s-web-backup:latest"
                         
-                        // Step 6: Restart Ansible container LAST (playbook mounted as volume - no rebuild)
-                        echo "🔄 Restarting Ansible monitoring..."
-                        sh "docker compose up -d ansible --no-build --no-color"
+                        // Step 6: Rebuild and restart Ansible container LAST (fast build - only playbooks)
+                        echo "🔨 Building Ansible container (playbooks only)..."
+                        sh "docker compose build ansible"
+                        echo "🔄 Starting Ansible monitoring..."
+                        sh "docker compose up -d ansible --no-color"
                         echo "✅ Ansible monitoring active"
                         
                         buildStatus.deploy = "✅ **Deployed**"
@@ -186,7 +188,7 @@ pipeline {
                         
                         // Ensure Ansible is started even on failure
                         echo "⚠️ Deployment failed - starting Ansible anyway..."
-                        sh "docker compose up -d ansible --no-build --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        sh "docker compose up -d ansible --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
                         
                         error "Deployment failed: ${e.message}"
                     }
