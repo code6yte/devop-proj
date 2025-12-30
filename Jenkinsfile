@@ -273,10 +273,11 @@ def ensureTrivyScanner() {
             docker run -d \
             --name ${TRIVY_CONTAINER} \
             --restart unless-stopped \
+            --entrypoint /bin/sh \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v trivy-cache:/root/.cache/ \
             aquasec/trivy:latest \
-            tail -f /dev/null
+            -c 'while true; do sleep 3600; done'
         """
     }
 
