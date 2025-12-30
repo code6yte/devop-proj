@@ -141,26 +141,31 @@ pipeline {
                 script {
                     echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        // Step 1: Stop Ansible monitoring FIRST (before removing old containers)
-                        echo "🛑 Stopping Ansible monitoring..."
-                        sh "docker stop ansible 2>/dev/null || echo 'Ansible container not running'"
+                        // Step 1: Stop and remove Ansible container FIRST (before other containers)
+                        echo "🛑 Stopping and removing Ansible container..."
+                        sh "docker rm -f ansible 2>/dev/null || echo 'Ansible container not found'"
 
-                        // Step 2: Deploy new containers and remove old ones
-                        echo "📦 Deploying new containers..."
+                        // Step 2: Deploy new web containers and remove old ones
+                        echo "📦 Deploying new web containers..."
                         sh """
                             IMAGE_TAG=${IMAGE_TAG} \
                             REPLICAS=${params.REPLICAS} \
                             docker compose up -d --scale web=${params.REPLICAS} --no-color 2>&1 | tee deploy_output.txt
                         """
                         
-                        // Step 3: Verify deployment
+                        // Step 3: Verify web deployment
                         def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
-                        echo "✅ Deployment successful - ${runningContainers} containers running"
-                        buildStatus.deploy = "✅ **Deployed**"
+                        echo "✅ Web deployment successful - ${runningContainers} containers running"
                         
-                        // Step 4: Start Ansible monitoring LAST (after new containers are running)
+                        // Step 4: Update backup container
+                        echo "🔄 Updating backup container..."
+                        sh "docker compose up -d backup --no-color"
+                        
+                        // Step 5: Recreate and start Ansible container LAST (after all other containers)
                         echo "✅ Starting Ansible monitoring..."
-                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        sh "docker compose up -d ansible --no-color"
+                        
+                        buildStatus.deploy = "✅ **Deployed**"
                         
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
@@ -169,7 +174,7 @@ pipeline {
                         
                         // Ensure Ansible is started even on failure
                         echo "⚠️ Deployment failed - starting Ansible anyway..."
-                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        sh "docker compose up -d ansible --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
                         
                         error "Deployment failed: ${e.message}"
                     }

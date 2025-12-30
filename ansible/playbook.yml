@@ -15,7 +15,7 @@
     # Explicitly specify the docker-compose.yml file
     - name: Ensure {{ desired_replicas }} replicas of web service are running
       shell: |
-        cd {{ project_dir }} && docker compose -f docker-compose.yml up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
+        cd {{ project_dir }} && docker compose up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 
