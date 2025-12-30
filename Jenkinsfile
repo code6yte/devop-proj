@@ -52,13 +52,11 @@ pipeline {
                         -v trivy-cache:/root/.cache/ \
                         aquasec/trivy:latest tail -f /dev/null
                         """
-                        sh "docker wait ${containerName} || true" // Wait for container to exit, but it should not as we use tail -f
-                        sh "sleep 5" // Give it a moment to stabilize
+                        sh "sleep 3" // Give it a moment to stabilize
                     } else if (isRunning == 'false') {
                         echo "Trivy scanner container exists but is not running. Starting it..."
                         sh "docker start ${containerName}"
-                        sh "docker wait ${containerName} || true" // Wait for it to exit, but it should not
-                        sh "sleep 5" // Give it a moment to stabilize
+                        sh "sleep 3" // Give it a moment to stabilize
                     } else {
                         echo "Trivy scanner container is already running."
                     }
