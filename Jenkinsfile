@@ -157,9 +157,10 @@ pipeline {
                         def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
                         echo "✅ Web deployment successful - ${runningContainers} containers running"
                         
-                        // Step 4: Update backup container
-                        echo "🔄 Updating backup container..."
-                        sh "docker compose up -d backup --no-color"
+                        // Step 4: Create backup image for self-healing
+                        echo "💾 Creating backup image for self-healing..."
+                        sh "docker tag s-web:${IMAGE_TAG} s-web-backup:latest"
+                        echo "✅ Backup image created: s-web-backup:latest"
                         
                         // Step 5: Recreate and start Ansible container LAST (after all other containers)
                         echo "✅ Starting Ansible monitoring..."

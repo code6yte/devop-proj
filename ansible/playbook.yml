@@ -3,23 +3,116 @@
   hosts: localhost
   gather_facts: yes
   vars:
-    # Project path mapped in the container
-    project_dir: /project
+    compose_project: s
     web_service_name: web
-    # Read the target from the container's environment, default to 3
-    desired_replicas: "{{ lookup('env', 'TARGET_REPLICAS') | default(3, true) }}"
-    website_dir: /usr/share/nginx/html
+    network_name: s_network
+    desired_replicas: "{{ lookup('env', 'TARGET_REPLICAS') | default(3, true) | int }}"
+    backup_image: "s-web-backup:latest"
     
   tasks:
-    # 1. Enforce State using Docker Compose
-    # Explicitly specify the docker-compose.yml file
-    - name: Ensure {{ desired_replicas }} replicas of web service are running
+    # 1. Check current running web containers
+    - name: Get current running web containers count
       shell: |
-        cd {{ project_dir }} && docker compose up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
-      register: compose_scale
-      changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
+        docker ps --filter "label=com.docker.compose.project={{ compose_project }}" \
+                  --filter "label=com.docker.compose.service={{ web_service_name }}" \
+                  --format "{{'{{'}}{{'}}'}} .ID {{'{{'}}{{'}}'}} .Names" | wc -l
+      register: current_count
+      changed_when: false
 
-    - name: Notify Discord of Successful Healing
+    - name: Display current state
+      debug:
+        msg: "Current: {{ current_count.stdout | int }} containers, Desired: {{ desired_replicas }} containers"
+
+    # 2. Calculate how many containers need to be created
+    - name: Calculate containers to create
+      set_fact:
+        containers_needed: "{{ (desired_replicas | int) - (current_count.stdout | int) }}"
+
+    # 3. Start missing containers from backup image
+    - name: Start new web containers from backup image
+      shell: |
+        docker run -d \
+          --name s-web-restored-{{ item }} \
+          --network {{ network_name }} \
+          --label com.docker.compose.project={{ compose_project }} \
+          --label com.docker.compose.service={{ web_service_name }} \
+          --label restored=true \
+          --label restored.timestamp={{ ansible_date_time.iso8601 }} \
+          -p 8090-8099:3000 \
+          {{ backup_image }}
+      loop: "{{ range(1, (containers_needed | int) + 1) | list }}"
+      when: containers_needed | int > 0
+      register: container_restore
+      ignore_errors: yes
+
+    - name: Notify Discord of Container Restoration
+      uri:
+        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          embeds:
+            - title: "🔧 Self-Healing: Containers Restored"
+              description: "{{ containers_needed }} container(s) were restored from backup image."
+              color: 3066993  # Green
+              fields:
+                - name: "Previous Count"
+                  value: "{{ current_count.stdout }}"
+                  inline: true
+                - name: "Target Count"
+                  value: "{{ desired_replicas }}"
+                  inline: true
+                - name: "Restored Count"
+                  value: "{{ containers_needed }}"
+                  inline: true
+                - name: "Backup Image"
+                  value: "`{{ backup_image }}`"
+                  inline: false
+      when: 
+        - containers_needed | int > 0
+        - lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+      ignore_errors: yes
+
+    # 4. Remove excess containers if too many are running
+    - name: Get excess container IDs
+      shell: |
+        docker ps --filter "label=com.docker.compose.project={{ compose_project }}" \
+                  --filter "label=com.docker.compose.service={{ web_service_name }}" \
+                  --format "{{'{{'}}{{'}}'}} .ID" | tail -n +{{ desired_replicas | int + 1 }}
+      register: excess_containers
+      when: current_count.stdout | int > desired_replicas | int
+      changed_when: false
+
+    - name: Stop and remove excess containers
+      shell: "docker rm -f {{ item }}"
+      loop: "{{ excess_containers.stdout_lines }}"
+      when: 
+        - current_count.stdout | int > desired_replicas | int
+        - excess_containers.stdout_lines | length > 0
+      ignore_errors: yes
+
+    - name: Notify Discord of Excess Container Removal
+      uri:
+        url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          embeds:
+            - title: "🗑️ Self-Healing: Excess Containers Removed"
+              description: "Removed {{ excess_containers.stdout_lines | length }} excess container(s)."
+              color: 15844367  # Gold
+              fields:
+                - name: "Previous Count"
+                  value: "{{ current_count.stdout }}"
+                  inline: true
+                - name: "Target Count"
+                  value: "{{ desired_replicas }}"
+                  inline: true
+      when: 
+        - current_count.stdout | int > desired_replicas | int
+        - excess_containers.stdout_lines | length > 0
+        - lookup('env', 'DISCORD_WEBHOOK_URL') != ""
+      ignore_errors: yes
       uri:
         url: "{{ lookup('env', 'DISCORD_WEBHOOK_URL') }}"
         method: POST
