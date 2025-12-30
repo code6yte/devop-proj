@@ -137,29 +137,37 @@ pipeline {
                 script {
                     echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        // Temporarily stop Ansible monitoring during deployment
+                        // Step 1: Stop Ansible monitoring FIRST (before removing old containers)
+                        echo "🛑 Stopping Ansible monitoring..."
                         sh "docker stop ansible 2>/dev/null || echo 'Ansible container not running'"
 
-                        // Deploy with rolling update
+                        // Step 2: Deploy new containers and remove old ones
+                        echo "📦 Deploying new containers..."
                         sh """
                             IMAGE_TAG=${IMAGE_TAG} \
                             REPLICAS=${params.REPLICAS} \
                             docker compose up -d --scale web=${params.REPLICAS} --no-color 2>&1 | tee deploy_output.txt
                         """
                         
-                        // Verify deployment
+                        // Step 3: Verify deployment
                         def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
                         echo "✅ Deployment successful - ${runningContainers} containers running"
                         buildStatus.deploy = "✅ **Deployed**"
+                        
+                        // Step 4: Start Ansible monitoring LAST (after new containers are running)
+                        echo "✅ Starting Ansible monitoring..."
+                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
                         
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
                         def logs = sh(returnStdout: true, script: "tail -n 10 deploy_output.txt 2>/dev/null || echo 'No logs available'").trim()
                         buildStatus.deploy_logs = "```text\n${logs}\n```"
+                        
+                        // Ensure Ansible is started even on failure
+                        echo "⚠️ Deployment failed - starting Ansible anyway..."
+                        sh "docker start ansible 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        
                         error "Deployment failed: ${e.message}"
-                    } finally {
-                        // Always restart Ansible monitoring
-                        sh "docker start ansible 2>/dev/null || echo 'Could not restart Ansible'"
                     }
                 }
             }
