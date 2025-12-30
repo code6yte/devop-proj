@@ -7,10 +7,11 @@ services:
     container_name: ansible
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./ansible:/ansible:ro  # Mount entire ansible directory as read-only
+      - ./ansible/playbook.yml:/ansible/playbook-live.yml:ro  # Mount live playbook
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - TARGET_REPLICAS=${REPLICAS:-3}
+      - PLAYBOOK_FILE=/ansible/playbook-live.yml
     working_dir: /ansible
     networks:
       - network

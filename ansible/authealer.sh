@@ -56,7 +56,8 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
   fi
 
   # Execute Restoration
-  ansible-playbook /ansible/playbook.yml >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
+  PLAYBOOK="${PLAYBOOK_FILE:-/ansible/playbook.yml}"
+  ansible-playbook "$PLAYBOOK" >> "$LOG" 2>&1 || echo "[authealer] Ansible failed" >> "$LOG"
 
   # Post-Healing Health Check
   (
