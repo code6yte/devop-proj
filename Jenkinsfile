@@ -37,8 +37,8 @@ pipeline {
             steps {
                 script {
                     echo "Ensuring Trivy scanner container is ready..."
-                    def containerExists = sh(returnStdout: true, script: "docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner$' && echo 'true' || echo 'false'").trim()
-                    def isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^trivy-scanner$' && echo 'true' || echo 'false'").trim()
+                    def containerExists = sh(returnStdout: true, script: "docker ps -a --format '{{.Names}}' | grep -q '^trivy-scanner\$' && echo 'true' || echo 'false'").trim()
+                    def isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^trivy-scanner\$' && echo 'true' || echo 'false'").trim()
                     
                     if (containerExists == 'false') {
                         echo "Trivy scanner container not found. Creating it..."
@@ -64,7 +64,7 @@ pipeline {
                     }
 
                     // Final check to ensure it's actually running
-                    if (sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^trivy-scanner$' && echo 'true' || echo 'false'").trim() == 'false') {
+                    if (sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^trivy-scanner\$' && echo 'true' || echo 'false'").trim() == 'false') {
                         error "Trivy scanner failed to start/run. Aborting pipeline."
                     }
                     
@@ -179,61 +179,71 @@ pipeline {
 
     post {
         always {
-            long endTime = System.currentTimeMillis()
-            long durationSeconds = (endTime - buildStatus.start_time) / 1000
-            def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
+            script {
+                long endTime = System.currentTimeMillis()
+                long durationSeconds = (endTime - buildStatus.start_time) / 1000
+                def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
 
-            def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
-            if (buildStatus.security.contains('🚨')) resultColor = 16761095
-            
-            def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
-            def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
-            
-            def statusSummary = [
-                "🏗️ **Lint Check:** ${buildStatus.lint}",
-                "🛡️ **Security:** ${buildStatus.security}",
-                "🚀 **Deployment:** ${buildStatus.deploy}"
-            ].join("\n")
+                def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
+                if (buildStatus.security.contains('🚨')) resultColor = 16761095
+                
+                def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
+                def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+                
+                def statusSummary = [
+                    "🏗️ **Lint Check:** ${buildStatus.lint}",
+                    "🛡️ **Security:** ${buildStatus.security}",
+                    "🚀 **Deployment:** ${buildStatus.deploy}"
+                ].join("\n")
 
-            def fields = [
-                [ name: "📊 Execution Summary", value: statusSummary, inline: false ],
-                [ name: "🛡️ Security Overview", value: buildStatus.security_details, inline: false ]
-            ]
+                def fields = [
+                    [ name: "📊 Execution Summary", value: statusSummary, inline: false ],
+                    [ name: "🛡️ Security Overview", value: buildStatus.security_details, inline: false ]
+                ]
 
-            if (buildStatus.lint_logs) {
-                fields << [ name: "⚠️ Lint Error Snippet", value: buildStatus.lint_logs, inline: false ]
+                if (buildStatus.lint_logs) {
+                    fields << [ name: "⚠️ Lint Error Snippet", value: buildStatus.lint_logs, inline: false ]
+                }
+                if (buildStatus.deploy_logs) {
+                    fields << [ name: "❌ Deploy Error Snippet", value: buildStatus.deploy_logs, inline: false ]
+                }
+
+                fields << [ name: "⏱️ Duration", value: "`${duration}`", inline: true ]
+                fields << [ name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true ]
+                fields << [ name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true ]
+                fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", "inline": false ]
+
+                def finalPayload = [
+                    embeds: [[
+                        title: resultTitle,
+                        description: "Final report for build **#${env.BUILD_NUMBER}**",
+                        color: resultColor,
+                        fields: fields,
+                        footer: [ text: "Jenkins • Self-Healing Infrastructure • ${timestamp}" ]
+                    ]]
+                ]
+                
+                writeFile file: 'discord_final.json', text: JsonOutput.toJson(finalPayload)
+                
+                echo "--- DISCORD FINAL PAYLOAD ---"
+                sh "cat discord_final.json"
+                
+                // --- DISCORD NOTIFICATION ---
+                // Try sending the notification. If it fails, log the error but don't abort the entire cleanup.
+                try {
+                    sh 'curl -f -H "Content-Type: multipart/form-data" \
+                         -F "payload_json=$(cat discord_final.json)" \
+                         -F "file1=@security_report.md" \
+                         $DISCORD_WEBHOOK_URL'
+                } catch (Exception e) {
+                    echo "WARNING: Failed to send Discord notification. Error: ${e.getMessage()}"
+                }
+                // --- END DISCORD NOTIFICATION ---
+
+                sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
+                // Ensure all cleanup commands use || true for robustness
+                sh "rm -f discord_final.json trivy_report.txt security_report.md lint_output.txt deploy_output.txt || true"
             }
-            if (buildStatus.deploy_logs) {
-                fields << [ name: "❌ Deploy Error Snippet", value: buildStatus.deploy_logs, inline: false ]
-            }
-
-            fields << [ name: "⏱️ Duration", value: "`${duration}`", inline: true ]
-            fields << [ name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true ]
-            fields << [ name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true ]
-            fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", "inline": false ]
-
-            def finalPayload = [
-                embeds: [[
-                    title: resultTitle,
-                    description: "Final report for build **#${env.BUILD_NUMBER}**",
-                    color: resultColor,
-                    fields: fields,
-                    footer: [ text: "Jenkins • Self-Healing Infrastructure • ${timestamp}" ]
-                ]]
-            ]
-            
-            writeFile file: 'discord_final.json', text: JsonOutput.toJson(finalPayload)
-            
-            echo "--- DISCORD FINAL PAYLOAD ---"
-            sh "cat discord_final.json"
-            
-            sh 'curl -H "Content-Type: multipart/form-data" \
-                 -F "payload_json=$(cat discord_final.json)" \
-                 -F "file1=@security_report.md" \
-                 $DISCORD_WEBHOOK_URL'
-            
-            sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
-            sh "rm -f discord_final.json trivy_report.txt security_report.md lint_output.txt deploy_output.txt || true"
         }
     }
 }

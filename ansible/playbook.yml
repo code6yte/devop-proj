@@ -12,10 +12,10 @@
     
   tasks:
     # 1. Enforce State using Docker Compose
-    # This automatically heals missing containers and ensures the count is correct
+    # Explicitly specify the docker-compose.yml file
     - name: Ensure {{ desired_replicas }} replicas of web service are running
       shell: |
-        cd {{ project_dir }} && docker compose up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
+        cd {{ project_dir }} && docker compose -f docker-compose.yml up -d --scale {{ web_service_name }}={{ desired_replicas }} --no-recreate
       register: compose_scale
       changed_when: "'Created' in compose_scale.stdout or 'Recreating' in compose_scale.stdout"
 
@@ -31,7 +31,8 @@
               color: 3066993 # Green
               fields:
                 - name: "Output"
-                  value: "```\n{{ (compose_scale.stderr | default(compose_scale.stdout) | regex_findall('Container\\s+([a-zA-Z0-9_-]+)\\s+(Created|Recreating|Started)') | map('join', '   ') | join('\n') | trim) or 'State OK (No changes detected)' }}\n```"
+                  value: "```\n{{ (compose_scale.stderr | default(compose_scale.stdout) | regex_findall('Container\s+([a-zA-Z0-9_-]+)\s+(Created|Recreating|Started)') | map('join', '   ') | join('\n') | trim) or 'State OK (No changes detected)' }}
+```"
                   inline: false
       when: lookup('env', 'DISCORD_WEBHOOK_URL') != ""
       ignore_errors: yes
