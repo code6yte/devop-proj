@@ -2,7 +2,7 @@
 set -eu
 
 LOG=/var/log/authealer.log
-# Note: LOCK_FILE is no longer actively checked here, as Jenkins will stop/start this script directly.
+NOTIFIED_FLAG=/tmp/authealer_notified
 mkdir -p /var/log
 
 echo "[authealer] starting..." | tee -a "$LOG"
@@ -19,7 +19,8 @@ echo "[authealer] starting..." | tee -a "$LOG"
     
     if [ "$HEALTHY_COUNT" -ge "$REPLICAS" ]; then
       echo "[authealer] Detected ${HEALTHY_COUNT}/${REPLICAS} healthy web containers. Sending startup notification." >> "$LOG"
-      if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
+      # Only send notification once per container lifecycle
+      if [ ! -f "$NOTIFIED_FLAG" ] && [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
         WEB_STATUS=$(docker ps --filter "name=s-web" --format "table {{.Names}}	{{.Status}}")
         PAYLOAD=$(jq -n \
                   --arg title "🟢 Self-Healing Node Online" \
@@ -31,6 +32,10 @@ echo "[authealer] starting..." | tee -a "$LOG"
                   '{embeds: [{title: $title, description: $desc, color: ($color|tonumber), fields: [{name: $f_name, value: ("```\n" + $f_val + "\n```")}], timestamp: $ts}]}')
 
         curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null || true
+        touch "$NOTIFIED_FLAG"
+        echo "[authealer] Startup notification sent and flagged." >> "$LOG"
+      else
+        echo "[authealer] Startup notification skipped (already sent or webhook not configured)." >> "$LOG"
       fi
       break # Success, exit loop
     fi
@@ -44,14 +49,15 @@ echo "[authealer] starting..." | tee -a "$LOG"
   fi
 ) &
 
-# Now start monitoring for unexpected events
-docker events --filter 'type=container' --filter 'event=destroy' --format '{{json .}}' | while read -r ev; do
-  # Extract container name and check if it's a web container
+# Now start monitoring for unexpected events (stop or destroy)
+docker events --filter 'type=container' --filter 'event=destroy' --filter 'event=stop' --format '{{json .}}' | while read -r ev; do
+  # Extract container name and event type
   CONTAINER_NAME=$(echo "$ev" | jq -r '.Actor.Attributes.name // empty')
+  EVENT_TYPE=$(echo "$ev" | jq -r '.Action // empty')
   
   # Only heal if it's a web container from our compose project
   if echo "$CONTAINER_NAME" | grep -q "^s-web"; then
-    echo "[authealer] Web container destroyed: $CONTAINER_NAME" | tee -a "$LOG"
+    echo "[authealer] Web container ${EVENT_TYPE}: $CONTAINER_NAME" | tee -a "$LOG"
     
     # Check current count vs desired
     CURRENT_COUNT=$(docker ps --filter "label=com.docker.compose.project=s" --filter "label=com.docker.compose.service=web" --format "{{.ID}}" | wc -l)
@@ -74,7 +80,7 @@ docker events --filter 'type=container' --filter 'event=destroy' --format '{{jso
       # Immediate Alert
       if [ ! -z "$DISCORD_WEBHOOK_URL" ]; then
         curl -s -H "Content-Type: application/json" \
-             -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Container $CONTAINER_NAME destroyed. Restoring state ($CURRENT_COUNT/$DESIRED_COUNT)...\", \"color\": 15548997}]}" \
+             -d "{\"embeds\": [{\"title\": \"🚨 Healing Event Triggered\", \"description\": \"Container $CONTAINER_NAME ${EVENT_TYPE}. Restoring state ($CURRENT_COUNT/$DESIRED_COUNT)...\", \"color\": 15548997}]}" \
              "$DISCORD_WEBHOOK_URL" > /dev/null || true
       fi
 

@@ -36,14 +36,17 @@
                               --format "{{ '{{' }}.Names{{ '}}' }}" | \
                   grep -oP 's-web-\K\d+' | sort -n | tail -1)
         NEXT_ID=$((${NEXT_ID:-0} + 1))
+        PORT=$((8090 + NEXT_ID - 1))
         docker run -d \
           --name s-web-${NEXT_ID} \
           --network {{ network_name }} \
+          -p ${PORT}:3000 \
           --label com.docker.compose.project={{ compose_project }} \
           --label com.docker.compose.service={{ web_service_name }} \
           --label restored=true \
           --label restored.timestamp={{ ansible_date_time.iso8601 }} \
           {{ backup_image }}
+        echo "Container s-web-${NEXT_ID} started on port ${PORT}"
       loop: "{{ range(1, (containers_needed | int) + 1) | list }}"
       when: containers_needed | int > 0
       register: container_restore
