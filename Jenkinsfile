@@ -368,5 +368,9 @@ def cleanupArtifacts() {
               2>/dev/null || true
     """
     
+    // Stop Trivy scanner to free up resources
+    echo "🛑 Stopping Trivy scanner to save resources..."
+    sh "docker stop ${TRIVY_CONTAINER} 2>/dev/null || echo 'Trivy scanner already stopped'"
+    
     echo "✅ Cleanup complete"
 }
