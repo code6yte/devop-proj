@@ -141,11 +141,21 @@ pipeline {
                 script {
                     echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        // Step 1: Stop and remove Ansible container FIRST (before other containers)
+                        // Step 1: Ensure Ansible image exists (build once if not present)
+                        def ansibleImageExists = sh(returnStatus: true, script: "docker image inspect ansible-control:local >/dev/null 2>&1") == 0
+                        if (!ansibleImageExists) {
+                            echo "🔨 Building Ansible image for first time..."
+                            sh "docker compose build ansible --no-cache"
+                            echo "✅ Ansible image created: ansible-control:local"
+                        } else {
+                            echo "✅ Using existing Ansible image: ansible-control:local"
+                        }
+                        
+                        // Step 2: Stop and remove Ansible container FIRST (before other containers)
                         echo "🛑 Stopping and removing Ansible container..."
                         sh "docker rm -f ansible 2>/dev/null || echo 'Ansible container not found'"
 
-                        // Step 2: Deploy new web containers and remove old ones
+                        // Step 3: Deploy new web containers and remove old ones
                         echo "📦 Deploying new web containers..."
                         sh """
                             IMAGE_TAG=${IMAGE_TAG} \
@@ -153,18 +163,18 @@ pipeline {
                             docker compose up -d --scale web=${params.REPLICAS} --no-color 2>&1 | tee deploy_output.txt
                         """
                         
-                        // Step 3: Verify web deployment
+                        // Step 4: Verify web deployment
                         def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
                         echo "✅ Web deployment successful - ${runningContainers} containers running"
                         
-                        // Step 4: Create backup image for self-healing
+                        // Step 5: Create backup image for self-healing
                         echo "💾 Creating backup image for self-healing..."
                         sh "docker tag s-web:${IMAGE_TAG} s-web-backup:latest"
                         echo "✅ Backup image created: s-web-backup:latest"
                         
-                        // Step 5: Restart Ansible container LAST (playbook mounted as volume - no rebuild needed)
+                        // Step 6: Restart Ansible container LAST (playbook mounted as volume - no rebuild)
                         echo "🔄 Restarting Ansible monitoring..."
-                        sh "docker compose up -d ansible --no-color"
+                        sh "docker compose up -d ansible --no-build --no-color"
                         echo "✅ Ansible monitoring active"
                         
                         buildStatus.deploy = "✅ **Deployed**"
@@ -176,7 +186,7 @@ pipeline {
                         
                         // Ensure Ansible is started even on failure
                         echo "⚠️ Deployment failed - starting Ansible anyway..."
-                        sh "docker compose up -d ansible --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
+                        sh "docker compose up -d ansible --no-build --no-color 2>/dev/null || echo 'Warning: Could not start Ansible'"
                         
                         error "Deployment failed: ${e.message}"
                     }
