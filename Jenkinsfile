@@ -1,6 +1,6 @@
 import groovy.json.JsonOutput
 
-// GLOBAL STATUS TRACKER
+// Build metrics and status tracker
 def buildStatus = [
     lint: "⚪ Skipped",
     security: "⏳ Pending",
@@ -18,12 +18,14 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '3'))
         disableConcurrentBuilds()
         timeout(time: 30, unit: 'MINUTES')
+        timestamps()
     }
 
     environment {
         COMPOSE_PROJECT_NAME = 's'
         DOCKER_BUILDKIT = '1'
-        IMAGE_TAG = "${env.BUILD_NUMBER}" 
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        TRIVY_CONTAINER = 'trivy-scanner'
         DISCORD_WEBHOOK_URL = credentials('discord-webhook-url')
     }
 
@@ -36,56 +38,20 @@ pipeline {
         stage('Initialize') {
             steps {
                 script {
-                    echo "Ensuring Trivy scanner container is ready..."
-                    def containerName = "trivy-scanner"
-                    def containerExists = sh(returnStdout: true, script: "docker ps -a --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
-                    def isRunning = "false"
-                    if (containerExists == 'true') {
-                        isRunning = sh(returnStdout: true, script: "docker ps --format '{{.Names}}' | grep -q '^${containerName}\$' && echo 'true' || echo 'false'").trim()
-                    }
+                    // Send start notification to Discord
+                    sendDiscordNotification(
+                        title: "🏗️ Build Pipeline Started",
+                        description: "Deployment process for build **#${env.BUILD_NUMBER}** of **${env.JOB_NAME}**",
+                        color: 3447003,
+                        fields: [
+                            [name: "👤 Triggered By", value: "${currentBuild.getBuildCauses()[0].shortDescription}", inline: true],
+                            [name: "📋 Project", value: "`${env.JOB_NAME}`", inline: true],
+                            [name: "🔗 Repository", value: "${params.REPO_URL}", inline: false]
+                        ]
+                    )
                     
-                    if (containerExists == 'false') {
-                        echo "Trivy scanner container not found. Creating it..."
-                        sh """
-                        docker run -d --name ${containerName} \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v trivy-cache:/root/.cache/ \
-                        aquasec/trivy:latest tail -f /dev/null
-                        """
-                        sh "sleep 3" // Give it a moment to stabilize
-                    } else if (isRunning == 'false') {
-                        echo "Trivy scanner container exists but is not running. Starting it..."
-                        sh "docker start ${containerName}"
-                        sh "sleep 3" // Give it a moment to stabilize
-                    } else {
-                        echo "Trivy scanner container is already running."
-                    }
-
-                    // Final check to ensure it's actually running
-                    def statusCheck = sh(returnStdout: true, script: "docker inspect -f '{{.State.Running}}' ${containerName} 2>/dev/null || echo 'false'").trim()
-                    if (statusCheck != 'true') {
-                        sh "docker logs ${containerName} || true"
-                        error "Trivy scanner failed to start/run. Aborting pipeline."
-                    }
-                    echo "Trivy scanner is running successfully."
-                    
-                    def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
-                    def startPayload = [
-                        embeds: [[
-                            title: "🏗️ Build Pipeline Started",
-                            description: "Deployment process for build **#${env.BUILD_NUMBER}** of **${env.JOB_NAME}**.",
-                            color: 3447003,
-                            fields: [
-                                [ name: "👤 Triggered By", "value": "${currentBuild.getBuildCauses()[0].shortDescription}", "inline": true ],
-                                [ name: "📋 Project", "value": "`${env.JOB_NAME}`", "inline": true ],
-                                [ name: "🔗 Repository", "value": "${params.REPO_URL}", "inline": false ]
-                            ],
-                            timestamp: timestamp
-                        ]]
-                    ]
-                    writeFile file: 'discord_start.json', text: JsonOutput.toJson(startPayload)
-                    sh 'curl -H "Content-Type: application/json" -X POST -d @discord_start.json $DISCORD_WEBHOOK_URL'
-                    sh "rm discord_start.json"
+                    // Ensure Trivy scanner is ready
+                    ensureTrivyScanner()
                 }
             }
         }
@@ -93,7 +59,10 @@ pipeline {
         stage('Checkout & Prep') {
             steps {
                 script {
+                    echo "📦 Checking out source code..."
                     checkout scm
+                    
+                    echo "🔄 Cloning application repository..."
                     sh 'rm -rf docker/web/app'
                     sh "git clone ${params.REPO_URL} docker/web/app"
                 }
@@ -103,18 +72,19 @@ pipeline {
         stage('Quality Check (Lint)') {
             steps {
                 script {
+                    echo "🔍 Running code quality checks..."
                     try {
                         sh "docker build --target builder -t s-web-builder:${IMAGE_TAG} docker/web"
                         sh "docker run --rm s-web-builder:${IMAGE_TAG} npm run lint > lint_output.txt 2>&1"
-                        echo "--- LINT OUTPUT ---"
-                        sh "cat lint_output.txt"
+                        
+                        def lintOutput = readFile('lint_output.txt').trim()
+                        echo "✅ Lint check passed\n${lintOutput}"
                         buildStatus.lint = "✅ **Passed**"
                     } catch (Exception e) {
                         buildStatus.lint = "⚠️ **Failed**"
-                        echo "--- LINT ERROR OUTPUT ---"
-                        sh "cat lint_output.txt"
-                        def logs = sh(returnStdout: true, script: "[ -f lint_output.txt ] && tail -n 5 lint_output.txt || echo 'No logs'").trim()
+                        def logs = sh(returnStdout: true, script: "tail -n 10 lint_output.txt 2>/dev/null || echo 'No logs available'").trim()
                         buildStatus.lint_logs = "```text\n${logs}\n```"
+                        echo "⚠️ Lint check failed (non-blocking)\n${logs}"
                     }
                 }
             }
@@ -123,38 +93,42 @@ pipeline {
         stage('Security Scan (Trivy)') {
             steps {
                 script {
-                    echo "Baking production image..."
+                    echo "🏗️ Building production image..."
                     sh "IMAGE_TAG=${IMAGE_TAG} docker compose build web"
                     
-                    echo "Running Deep Security Scan..."
+                    echo "🛡️ Running security vulnerability scan..."
                     sh """
-                    docker exec trivy-scanner trivy image \
-                    --severity CRITICAL,HIGH \
-                    --scanners vuln,secret,config \
-                    --vuln-type os,library \
-                    --no-progress \
-                    s-web:${IMAGE_TAG} | tee trivy_report.txt || true
+                        docker exec ${TRIVY_CONTAINER} trivy image \
+                        --severity CRITICAL,HIGH \
+                        --scanners vuln,secret,config \
+                        --vuln-type os,library \
+                        --no-progress \
+                        --timeout 10m \
+                        s-web:${IMAGE_TAG} | tee trivy_report.txt
                     """
                     
+                    // Analyze security scan results
                     def report = readFile('trivy_report.txt').trim()
-                    
                     if (report.contains("Total: 0") || !report.contains("Total:")) {
                         buildStatus.security = "✅ **Clean**"
-                        buildStatus.security_details = ""
+                        echo "✅ No vulnerabilities found"
                     } else {
                         buildStatus.security = "🚨 **Vulnerabilities Found**"
-                        def table = sh(returnStdout: true, script: "grep -A 25 'Total:' trivy_report.txt | head -c 900").trim()
-                        buildStatus.security_details = "```text\n${table}...\n```"
+                        def vulnSummary = sh(returnStdout: true, script: "grep -A 20 'Total:' trivy_report.txt | head -c 800 || echo 'See full report'").trim()
+                        buildStatus.security_details = "```text\n${vulnSummary}...\n```"
+                        echo "🚨 Security vulnerabilities detected - see report"
                     }
 
-                    // Always create the security_report.md, even if clean, for consistent file sending
+                    // Generate security report
                     sh """
-                    echo "# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}" > security_report.md
-                    echo "## Image: s-web:${IMAGE_TAG}" >> security_report.md
-                    echo "---" >> security_report.md
-                    echo '```text' >> security_report.md
-                    cat trivy_report.txt >> security_report.md
-                    echo '```' >> security_report.md
+                        cat > security_report.md << 'EEOF'
+# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}
+## Image: s-web:${IMAGE_TAG}
+---
+\`\`\`text
+\$(cat trivy_report.txt)
+\`\`\`
+EEOF
                     """
                 }
             }
@@ -163,25 +137,31 @@ pipeline {
         stage('Zero-Downtime Deploy') {
             steps {
                 script {
+                    echo "🚀 Starting zero-downtime deployment..."
                     try {
-                        echo "Preparing Deployment: Stopping Ansible for maintenance..."
-                        sh "docker stop ansible || true"
+                        // Temporarily stop Ansible monitoring during deployment
+                        sh "docker stop ansible 2>/dev/null || echo 'Ansible container not running'"
 
-                        echo "Deploying new web containers..."
-                        sh "IMAGE_TAG=${IMAGE_TAG} REPLICAS=${params.REPLICAS} docker compose up -d --scale web=${params.REPLICAS} > deploy_output.txt 2>&1"
-                        echo "--- DEPLOY OUTPUT ---"
-                        sh "cat deploy_output.txt"
+                        // Deploy with rolling update
+                        sh """
+                            IMAGE_TAG=${IMAGE_TAG} \
+                            REPLICAS=${params.REPLICAS} \
+                            docker compose up -d --scale web=${params.REPLICAS} --no-color 2>&1 | tee deploy_output.txt
+                        """
+                        
+                        // Verify deployment
+                        def runningContainers = sh(returnStdout: true, script: "docker compose ps web --format json | jq -r '.State' | grep -c running || echo 0").trim()
+                        echo "✅ Deployment successful - ${runningContainers} containers running"
                         buildStatus.deploy = "✅ **Deployed**"
+                        
                     } catch (Exception e) {
                         buildStatus.deploy = "❌ **Failed**"
-                        echo "--- DEPLOY ERROR OUTPUT ---"
-                        sh "cat deploy_output.txt"
-                        def logs = sh(returnStdout: true, script: "[ -f deploy_output.txt ] && tail -n 5 deploy_output.txt || echo 'No logs'").trim()
+                        def logs = sh(returnStdout: true, script: "tail -n 10 deploy_output.txt 2>/dev/null || echo 'No logs available'").trim()
                         buildStatus.deploy_logs = "```text\n${logs}\n```"
-                        error "Deployment failed"
+                        error "Deployment failed: ${e.message}"
                     } finally {
-                        echo "Deployment complete. Starting Ansible for monitoring..."
-                        sh "docker start ansible"
+                        // Always restart Ansible monitoring
+                        sh "docker start ansible 2>/dev/null || echo 'Could not restart Ansible'"
                     }
                 }
             }
@@ -191,76 +171,192 @@ pipeline {
     post {
         always {
             script {
-                def endTime = System.currentTimeMillis()
-                long durationSeconds = (endTime - buildStatus.start_time) / 1000
-                def duration = "${(int)(durationSeconds / 60)}m ${durationSeconds % 60}s"
+                // Calculate build duration
+                long durationMs = System.currentTimeMillis() - buildStatus.start_time
+                long durationSec = durationMs / 1000
+                def duration = "${(int)(durationSec / 60)}m ${durationSec % 60}s"
 
-                def resultColor = (currentBuild.currentResult == 'SUCCESS') ? 5763719 : 15548997
-                if (buildStatus.security.contains('🚨')) resultColor = 16761095
+                // Determine result status and color
+                def resultColor = 5763719 // Green
+                def resultTitle = "🏁 Deployment Successful"
                 
-                def resultTitle = (currentBuild.currentResult == 'SUCCESS') ? "🏁 Deployment Successful" : "❌ Deployment Failed"
-                def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
-                
+                if (buildStatus.security.contains('🚨')) {
+                    resultColor = 16761095 // Orange - vulnerabilities found but deployed
+                }
+                if (currentBuild.currentResult != 'SUCCESS') {
+                    resultColor = 15548997 // Red - failed
+                    resultTitle = "❌ Deployment Failed"
+                }
+
+                // Build status summary
                 def statusSummary = [
                     "🏗️ **Lint Check:** ${buildStatus.lint}",
                     "🛡️ **Security:** ${buildStatus.security}",
                     "🚀 **Deployment:** ${buildStatus.deploy}"
                 ].join("\n")
 
+                // Prepare notification fields
                 def fields = [
-                    [ name: "📊 Execution Summary", value: statusSummary, inline: false ],
-                    [ name: "🛡️ Security Overview", value: buildStatus.security_details, inline: false ]
+                    [name: "📊 Execution Summary", value: statusSummary, inline: false]
                 ]
 
+                // Add security details if vulnerabilities found
+                if (buildStatus.security_details) {
+                    fields << [name: "🛡️ Security Overview", value: buildStatus.security_details, inline: false]
+                }
+
+                // Add error logs if present
                 if (buildStatus.lint_logs) {
-                    fields << [ name: "⚠️ Lint Error Snippet", value: buildStatus.lint_logs, inline: false ]
+                    fields << [name: "⚠️ Lint Error Snippet", value: buildStatus.lint_logs, inline: false]
                 }
                 if (buildStatus.deploy_logs) {
-                    fields << [ name: "❌ Deploy Error Snippet", value: buildStatus.deploy_logs, inline: false ]
+                    fields << [name: "❌ Deploy Error Snippet", value: buildStatus.deploy_logs, inline: false]
                 }
 
-                fields << [ name: "⏱️ Duration", value: "`${duration}`", inline: true ]
-                fields << [ name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true ]
-                fields << [ name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true ]
-                fields << [ name: "🔗 Repository", value: "${params.REPO_URL}", inline: false ]
+                // Add build metadata
+                fields << [name: "⏱️ Duration", value: "`${duration}`", inline: true]
+                fields << [name: "👥 Replicas", value: "`${params.REPLICAS}`", inline: true]
+                fields << [name: "📦 Version", value: "`${IMAGE_TAG}`", inline: true]
+                fields << [name: "🔗 Repository", value: "${params.REPO_URL}", inline: false]
 
-                def finalPayload = [
-                    embeds: [[
+                // Send final Discord notification
+                try {
+                    def hasVulnerabilities = buildStatus.security.contains('🚨') && fileExists('security_report.md')
+                    sendDiscordNotification(
                         title: resultTitle,
                         description: "Final report for build **#${env.BUILD_NUMBER}**",
                         color: resultColor,
                         fields: fields,
-                        footer: [ text: "Jenkins • Self-Healing Infrastructure • ${timestamp}" ]
-                    ]]
-                ]
-                
-                writeFile file: 'discord_final.json', text: JsonOutput.toJson(finalPayload)
-                
-                echo "--- DISCORD FINAL PAYLOAD ---"
-                sh "cat discord_final.json"
-                
-                // --- DISCORD NOTIFICATION ---
-                // Try sending the notification. If it fails, log the error but don't abort the entire cleanup.
-                try {
-                    // Conditionally attach security_report.md only if it exists and there were vulnerabilities
-                    def securityReportFile = "security_report.md"
-                    if (fileExists(securityReportFile) && buildStatus.security.contains('🚨')) {
-                         sh 'curl -f -H "Content-Type: multipart/form-data" \
-                             -F "payload_json=$(cat discord_final.json)" \
-                             -F "file1=@security_report.md" \
-                             $DISCORD_WEBHOOK_URL'
-                    } else {
-                         sh 'curl -f -H "Content-Type: application/json" -d "@discord_final.json" $DISCORD_WEBHOOK_URL'
-                    }
+                        attachFile: hasVulnerabilities ? 'security_report.md' : null
+                    )
                 } catch (Exception e) {
-                    echo "WARNING: Failed to send Discord notification. Error: ${e.getMessage()}"
+                    echo "⚠️ WARNING: Failed to send Discord notification: ${e.message}"
                 }
-                // --- END DISCORD NOTIFICATION ---
 
-                sh "docker rmi s-web-builder:${IMAGE_TAG} || true"
-                // Ensure all cleanup commands use || true for robustness
-                sh "rm -f discord_final.json trivy_report.txt security_report.md lint_output.txt deploy_output.txt || true"
+                // Cleanup
+                cleanupArtifacts()
             }
         }
     }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Ensures Trivy security scanner container is running
+ */
+def ensureTrivyScanner() {
+    echo "🔧 Checking Trivy scanner status..."
+    
+    def isRunning = sh(
+        returnStdout: true,
+        script: "docker inspect -f '{{.State.Running}}' ${TRIVY_CONTAINER} 2>/dev/null || echo 'false'"
+    ).trim()
+
+    if (isRunning == 'true') {
+        echo "✅ Trivy scanner is already running"
+        return
+    }
+
+    // Check if container exists but is stopped
+    def exists = sh(
+        returnStdout: true,
+        script: "docker ps -a --format '{{.Names}}' | grep -q '^${TRIVY_CONTAINER}\$' && echo 'true' || echo 'false'"
+    ).trim()
+
+    if (exists == 'true') {
+        echo "🔄 Starting existing Trivy scanner..."
+        sh "docker start ${TRIVY_CONTAINER}"
+    } else {
+        echo "🆕 Creating new Trivy scanner container..."
+        sh """
+            docker run -d \
+            --name ${TRIVY_CONTAINER} \
+            --restart unless-stopped \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ \
+            aquasec/trivy:latest \
+            tail -f /dev/null
+        """
+    }
+
+    // Verify it's running
+    sleep 2
+    isRunning = sh(
+        returnStdout: true,
+        script: "docker inspect -f '{{.State.Running}}' ${TRIVY_CONTAINER} 2>/dev/null || echo 'false'"
+    ).trim()
+
+    if (isRunning != 'true') {
+        sh "docker logs ${TRIVY_CONTAINER} 2>&1 || true"
+        error "❌ Trivy scanner failed to start"
+    }
+    
+    echo "✅ Trivy scanner is ready"
+}
+
+/**
+ * Send notification to Discord webhook
+ * @param config Map with title, description, color, fields, attachFile (optional)
+ */
+def sendDiscordNotification(Map config) {
+    def timestamp = sh(returnStdout: true, script: "date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    
+    def payload = [
+        embeds: [[
+            title: config.title,
+            description: config.description,
+            color: config.color,
+            fields: config.fields,
+            footer: [text: "Jenkins • Self-Healing Infrastructure"],
+            timestamp: timestamp
+        ]]
+    ]
+    
+    writeFile file: 'discord_payload.json', text: JsonOutput.toJson(payload)
+    
+    if (config.attachFile && fileExists(config.attachFile)) {
+        // Send with file attachment
+        sh """
+            curl -f -X POST \
+            -H "Content-Type: multipart/form-data" \
+            -F "payload_json=\$(cat discord_payload.json)" \
+            -F "file1=@${config.attachFile}" \
+            \$DISCORD_WEBHOOK_URL
+        """
+    } else {
+        // Send simple JSON notification
+        sh """
+            curl -f -X POST \
+            -H "Content-Type: application/json" \
+            -d @discord_payload.json \
+            \$DISCORD_WEBHOOK_URL
+        """
+    }
+    
+    sh "rm -f discord_payload.json"
+}
+
+/**
+ * Cleanup temporary files and old Docker images
+ */
+def cleanupArtifacts() {
+    echo "🧹 Cleaning up temporary files and images..."
+    
+    // Remove builder image
+    sh "docker rmi s-web-builder:${IMAGE_TAG} 2>/dev/null || true"
+    
+    // Remove temporary files
+    sh """
+        rm -f discord_payload.json \
+              trivy_report.txt \
+              security_report.md \
+              lint_output.txt \
+              deploy_output.txt \
+              2>/dev/null || true
+    """
+    
+    echo "✅ Cleanup complete"
 }
