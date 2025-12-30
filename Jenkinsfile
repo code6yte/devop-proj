@@ -111,23 +111,27 @@ pipeline {
                     def report = readFile('trivy_report.txt').trim()
                     if (report.contains("Total: 0") || !report.contains("Total:")) {
                         buildStatus.security = "✅ **Clean**"
+                        buildStatus.security_details = ""
                         echo "✅ No vulnerabilities found"
                     } else {
                         buildStatus.security = "🚨 **Vulnerabilities Found**"
-                        def vulnSummary = sh(returnStdout: true, script: "grep -A 20 'Total:' trivy_report.txt | head -c 800 || echo 'See full report'").trim()
-                        buildStatus.security_details = "```text\n${vulnSummary}...\n```"
-                        echo "🚨 Security vulnerabilities detected - see report"
+                        // Extract only the "Total:" line for the notification
+                        def totalLine = sh(returnStdout: true, script: "grep '^Total:' trivy_report.txt || echo 'Total: Unknown'").trim()
+                        buildStatus.security_details = "```\n${totalLine}\n```"
+                        echo "🚨 Security vulnerabilities detected: ${totalLine}"
                     }
 
-                    // Generate security report
-                    sh """
-                        echo '# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}' > security_report.md
-                        echo '## Image: s-web:${IMAGE_TAG}' >> security_report.md
-                        echo '---' >> security_report.md
-                        echo '```text' >> security_report.md
-                        cat trivy_report.txt >> security_report.md
-                        echo '```' >> security_report.md
-                    """
+                    // Generate full security report file (only if vulnerabilities found)
+                    if (!report.contains("Total: 0") && report.contains("Total:")) {
+                        sh """
+                            echo '# 🛡️ Security Scan Report - Build #${env.BUILD_NUMBER}' > security_report.md
+                            echo '## Image: s-web:${IMAGE_TAG}' >> security_report.md
+                            echo '---' >> security_report.md
+                            echo '```text' >> security_report.md
+                            cat trivy_report.txt >> security_report.md
+                            echo '```' >> security_report.md
+                        """
+                    }
                 }
             }
         }
